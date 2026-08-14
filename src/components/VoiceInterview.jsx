@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits } from '../services/aiService';
+import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits, refineTranscriptWithGemini } from '../services/aiService';
 import { saveInterviewTranscript } from '../utils/transcriptStorage';
-import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock, Key } from 'lucide-react';
 
 export default function VoiceInterview({ onInterviewComplete }) {
     // Navigation & Flow State: 'landing' -> 'privacy' -> 'survey' -> 'summary'
@@ -18,6 +18,10 @@ export default function VoiceInterview({ onInterviewComplete }) {
 
     // Voice Recognition (STT) State
     const [isListening, setIsListening] = useState(false);
+    const [isRefining, setIsRefining] = useState(false);
+    const [apiKey, setApiKey] = useState(() => (typeof localStorage !== 'undefined' && localStorage.getItem('valumni_gemini_api_key')) || '');
+    const [showKeyInput, setShowKeyInput] = useState(false);
+
     const [liveTranscript, setLiveTranscript] = useState('');
     const [transcriptAccumulated, setTranscriptAccumulated] = useState(''); // Prevents transcript deletion on mic re-press!
     const [speechSupported, setSpeechSupported] = useState(true);
@@ -257,8 +261,8 @@ export default function VoiceInterview({ onInterviewComplete }) {
         }
     };
 
-    // Save current answer and advance to next question
-    const handleSaveAndNext = () => {
+    // Save current answer and advance to next question with Gemini Flash AI post-processing
+    const handleSaveAndNext = async () => {
         shouldListenRef.current = false;
         stopVolumeMeter();
         if (isListening && recognitionRef.current) {
@@ -266,15 +270,19 @@ export default function VoiceInterview({ onInterviewComplete }) {
             setIsListening(false);
         }
 
-        let finalResponseText = liveTranscript.trim();
-        if (currentQuestion.id === 'demo_lastname') {
-            finalResponseText = correctFilipinoName(finalResponseText, 'lastname');
-        } else if (currentQuestion.id === 'demo_firstname') {
-            finalResponseText = correctFilipinoName(finalResponseText, 'firstname');
-        } else if (currentQuestion.id === 'demo_middleinitial') {
-            finalResponseText = correctFilipinoName(finalResponseText, 'middleinitial');
-        } else if (currentQuestion.id === 'demo_studentid' || currentQuestion.id === 'demo_grad_year' || currentQuestion.type === 'rating') {
-            finalResponseText = convertWordsToDigits(finalResponseText);
+        let rawResponseText = liveTranscript.trim();
+        let finalResponseText = rawResponseText;
+
+        if (rawResponseText) {
+            setIsRefining(true);
+            try {
+                finalResponseText = await refineTranscriptWithGemini(rawResponseText, currentQuestion, apiKey);
+                setLiveTranscript(finalResponseText);
+            } catch (err) {
+                console.error("Gemini post-processing error:", err);
+            } finally {
+                setIsRefining(false);
+            }
         }
 
         // Save response for current question
@@ -298,6 +306,7 @@ export default function VoiceInterview({ onInterviewComplete }) {
             if (onInterviewComplete) onInterviewComplete(finalResponses);
         }
     };
+
 
     // Previous question
     const handlePrev = () => {
@@ -463,10 +472,24 @@ export default function VoiceInterview({ onInterviewComplete }) {
                         <h3 className="text-xs font-bold text-slate-300 hidden md:block">{currentQuestion.sectionTitle}</h3>
                     </div>
 
-                    <div className="flex items-center space-x-4">
+                    <div className="flex items-center space-x-3">
                         <span className="text-xs font-mono text-amber-300 font-bold">
                             Question {currentQIndex + 1} / {allQuestions.length}
                         </span>
+
+                        {/* Google AI Studio Gemini API Key Setting Button */}
+                        <button
+                            onClick={() => setShowKeyInput(!showKeyInput)}
+                            className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-mono border transition-all ${apiKey
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                }`}
+                            title="Configure Google AI Studio API Key for Post-Processing"
+                        >
+                            <Key className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">{apiKey ? 'Gemini AI Active' : 'Set Gemini Key'}</span>
+                        </button>
+
                         {/* TTS Mute Toggle */}
                         <button
                             onClick={() => {
@@ -481,6 +504,48 @@ export default function VoiceInterview({ onInterviewComplete }) {
                         </button>
                     </div>
                 </div>
+
+                {/* Gemini API Key Inline Configuration Modal / Bar */}
+                {showKeyInput && (
+                    <div className="glass-panel rounded-2xl p-4 border border-indigo-500/30 space-y-3 bg-slate-900/90">
+                        <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-white flex items-center gap-2">
+                                <Key className="w-4 h-4 text-amber-400" />
+                                Google AI Studio API Key (Gemini Flash Post-Processor)
+                            </span>
+                            <button
+                                onClick={() => setShowKeyInput(false)}
+                                className="text-xs text-slate-400 hover:text-white"
+                            >
+                                ✕ Close
+                            </button>
+                        </div>
+                        <p className="text-[11px] text-slate-300">
+                            Paste your Google AI Studio API key below to enable intelligent post-processing for single letters (middle initial), ratings, and student IDs. Your key is saved locally in your browser.
+                        </p>
+                        <div className="flex gap-2">
+                            <input
+                                type="password"
+                                value={apiKey}
+                                onChange={(e) => {
+                                    setApiKey(e.target.value);
+                                    if (typeof localStorage !== 'undefined') {
+                                        localStorage.setItem('valumni_gemini_api_key', e.target.value);
+                                    }
+                                }}
+                                placeholder="AIzaSy..."
+                                className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
+                            />
+                            <button
+                                onClick={() => setShowKeyInput(false)}
+                                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold"
+                            >
+                                Save Key
+                            </button>
+                        </div>
+                    </div>
+                )}
+
 
                 {/* AI Voice Assistant Prompt Box */}
                 <div className="glass-panel rounded-3xl p-6 md:p-8 border border-indigo-500/30 space-y-4 relative overflow-hidden">
@@ -710,10 +775,23 @@ export default function VoiceInterview({ onInterviewComplete }) {
 
                     <button
                         onClick={handleSaveAndNext}
-                        className="flex items-center space-x-2 px-7 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-extrabold shadow-lg shadow-indigo-600/30 transition-all transform hover:scale-105"
+                        disabled={isRefining}
+                        className={`flex items-center space-x-2 px-7 py-3 rounded-2xl text-white text-xs font-extrabold shadow-lg transition-all transform hover:scale-105 ${isRefining
+                            ? 'bg-amber-600 animate-pulse cursor-wait shadow-amber-600/30'
+                            : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-600/30'
+                            }`}
                     >
-                        <span>{currentQIndex === allQuestions.length - 1 ? 'Complete Exit Interview' : 'Save & Next Question'}</span>
-                        <ArrowRight className="w-4 h-4" />
+                        {isRefining ? (
+                            <>
+                                <Sparkles className="w-4 h-4 animate-spin text-amber-300" />
+                                <span>✨ AI Refining Transcript...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>{currentQIndex === allQuestions.length - 1 ? 'Complete Exit Interview' : 'Save & Next Question'}</span>
+                                <ArrowRight className="w-4 h-4" />
+                            </>
+                        )}
                     </button>
                 </div>
             </div>

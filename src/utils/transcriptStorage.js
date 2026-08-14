@@ -1,21 +1,14 @@
 /**
  * VAlumni Interview Transcript Persistence Layer
- * Uses localStorage to store completed exit interview transcripts.
- * Each transcript is stored with a unique ID and timestamp.
+ * Integrates PostgreSQL API Backend (/api/transcripts) with local fallback.
  */
 
 const STORAGE_KEY = 'valumni_interview_transcripts';
 
 /**
- * Save a completed interview transcript to localStorage.
- * @param {Object} responses - Dictionary of { questionId: responseText }
- * @param {Array} allQuestions - Full survey question array for metadata
- * @returns {Object} The saved transcript record
+ * Helper to build transcript record from raw survey responses.
  */
-export function saveInterviewTranscript(responses, allQuestions) {
-    const existing = getInterviewTranscripts();
-
-    // Build structured record from responses
+export function buildTranscriptRecord(responses, allQuestions) {
     const fullName = [
         responses['demo_lastname'] || '',
         responses['demo_firstname'] || '',
@@ -34,7 +27,6 @@ export function saveInterviewTranscript(responses, allQuestions) {
     const ratingCount = [rateCore, rateElectives, rateMentorship, rateInternship, rateHardware, rateSoftware, rateInternet, rateLabEnv].filter(r => r > 0).length || 1;
     const overallAvg = parseFloat(((rateCore + rateElectives + rateMentorship + rateInternship + rateHardware + rateSoftware + rateInternet + rateLabEnv) / ratingCount).toFixed(2));
 
-    // Simple sentiment from overall average
     let sentimentLabel = 'Positive';
     let sentimentScore = 0.85;
     if (overallAvg < 3.2) {
@@ -45,7 +37,7 @@ export function saveInterviewTranscript(responses, allQuestions) {
         sentimentScore = 0.55;
     }
 
-    const record = {
+    return {
         id: `voice_${Date.now()}`,
         timestamp: new Date().toISOString(),
         source: 'voice_interview',
@@ -80,54 +72,144 @@ export function saveInterviewTranscript(responses, allQuestions) {
         },
         rawResponses: responses
     };
+}
 
-    existing.push(record);
+/**
+ * Save interview transcript to PostgreSQL database API with localStorage fallback.
+ */
+export async function saveInterviewTranscriptToDB(responses, allQuestions) {
+    const record = buildTranscriptRecord(responses, allQuestions);
 
+    // 1. Always save locally as fallback
+    saveInterviewTranscriptLocal(record);
+
+    // 2. Post to PostgreSQL API Server
     try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+        const res = await fetch('/api/transcripts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(record)
+        });
+
+        if (!res.ok) {
+            console.warn('PostgreSQL API save returned error status:', res.status);
+        } else {
+            console.log('Successfully persisted interview transcript to PostgreSQL DB.');
+        }
     } catch (e) {
-        console.error('Failed to save interview transcript to localStorage:', e);
+        console.warn('Failed to reach PostgreSQL API server. Saved to localStorage fallback.', e);
     }
 
     return record;
 }
 
 /**
- * Get all saved interview transcripts from localStorage.
- * @returns {Array} Array of transcript records
+ * Synchronous save compatibility function (calls async API in background).
+ */
+export function saveInterviewTranscript(responses, allQuestions) {
+    const record = buildTranscriptRecord(responses, allQuestions);
+    saveInterviewTranscriptLocal(record);
+
+    // Send async call to backend DB
+    fetch('/api/transcripts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record)
+    }).catch(e => console.warn('PostgreSQL sync fallback note:', e));
+
+    return record;
+}
+
+/**
+ * Fetch interview transcripts from PostgreSQL API (falling back to localStorage if server offline).
+ */
+export async function getInterviewTranscriptsFromDB() {
+    try {
+        const res = await fetch('/api/transcripts');
+        if (res.ok) {
+            const data = await res.json();
+            // Cache to localStorage for offline access
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (e) { }
+            return data;
+        }
+    } catch (e) {
+        console.warn('PostgreSQL API unreachable, falling back to localStorage transcripts:', e);
+    }
+    return getInterviewTranscriptsLocal();
+}
+
+/**
+ * Synchronous get function from localStorage.
  */
 export function getInterviewTranscripts() {
+    return getInterviewTranscriptsLocal();
+}
+
+/**
+ * Delete a specific transcript by ID from PostgreSQL DB and localStorage.
+ */
+export async function deleteInterviewTranscriptFromDB(id) {
+    deleteInterviewTranscriptLocal(id);
+    try {
+        await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
+    } catch (e) {
+        console.warn('PostgreSQL API delete error:', e);
+    }
+}
+
+export function deleteInterviewTranscript(id) {
+    deleteInterviewTranscriptLocal(id);
+    fetch(`/api/transcripts/${id}`, { method: 'DELETE' }).catch(() => { });
+}
+
+/**
+ * Clear all transcripts.
+ */
+export async function clearAllTranscriptsFromDB() {
+    clearAllTranscriptsLocal();
+    try {
+        await fetch('/api/transcripts', { method: 'DELETE' });
+    } catch (e) {
+        console.warn('PostgreSQL API clear error:', e);
+    }
+}
+
+export function clearAllTranscripts() {
+    clearAllTranscriptsLocal();
+    fetch('/api/transcripts', { method: 'DELETE' }).catch(() => { });
+}
+
+// Internal localStorage helpers
+function saveInterviewTranscriptLocal(record) {
+    const existing = getInterviewTranscriptsLocal();
+    const filtered = existing.filter(r => r.id !== record.id);
+    filtered.unshift(record);
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    } catch (e) {
+        console.error('Failed to save to localStorage:', e);
+    }
+}
+
+function getInterviewTranscriptsLocal() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return [];
-        return JSON.parse(raw);
+        return raw ? JSON.parse(raw) : [];
     } catch (e) {
-        console.error('Failed to read interview transcripts from localStorage:', e);
         return [];
     }
 }
 
-/**
- * Delete a specific transcript by ID.
- * @param {string} id - Transcript ID to delete
- */
-export function deleteInterviewTranscript(id) {
-    const existing = getInterviewTranscripts();
+function deleteInterviewTranscriptLocal(id) {
+    const existing = getInterviewTranscriptsLocal();
     const filtered = existing.filter(t => t.id !== id);
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
-    } catch (e) {
-        console.error('Failed to delete transcript:', e);
-    }
+    } catch (e) { }
 }
 
-/**
- * Clear all saved transcripts.
- */
-export function clearAllTranscripts() {
+function clearAllTranscriptsLocal() {
     try {
         localStorage.removeItem(STORAGE_KEY);
-    } catch (e) {
-        console.error('Failed to clear transcripts:', e);
-    }
+    } catch (e) { }
 }

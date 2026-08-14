@@ -1,8 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { parseLSPUDataset } from '../utils/datasetLoader';
-import { getInterviewTranscripts, deleteInterviewTranscript } from '../utils/transcriptStorage';
+import { getInterviewTranscriptsFromDB, deleteInterviewTranscriptFromDB } from '../utils/transcriptStorage';
 import { LSPU_SURVEY_STRUCTURE } from '../services/aiService';
-import { Search, Download, Filter, User, Eye, X, CheckCircle2, AlertTriangle, FileSpreadsheet, Mic, Trash2, FileText, Calendar, Award, Star } from 'lucide-react';
+import { Search, Download, Filter, User, Eye, X, CheckCircle2, AlertTriangle, FileSpreadsheet, Mic, Trash2, FileText, Calendar, Award, Star, Database, ArrowUpDown } from 'lucide-react';
 import Papa from 'papaparse';
 
 // Flatten survey structure into question lookup map
@@ -17,50 +16,50 @@ LSPU_SURVEY_STRUCTURE.forEach(section => {
 });
 
 export default function DatasetTable() {
-    const csvRecords = useMemo(() => parseLSPUDataset(), []);
     const [voiceRecords, setVoiceRecords] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [programFilter, setProgramFilter] = useState('ALL');
     const [sentimentFilter, setSentimentFilter] = useState('ALL');
+    const [sortBy, setSortBy] = useState('NEWEST');
     const [selectedRecord, setSelectedRecord] = useState(null);
 
-    // Load voice records on mount and refresh
-    const refreshVoiceRecords = () => {
-        setVoiceRecords(getInterviewTranscripts());
+    // Load voice records on mount and refresh from PostgreSQL / API
+    const refreshVoiceRecords = async () => {
+        const records = await getInterviewTranscriptsFromDB();
+        setVoiceRecords(records);
     };
 
     useEffect(() => {
         refreshVoiceRecords();
     }, []);
 
-    // Merge CSV records + localStorage voice interviews
+    // Only display saved PostgreSQL database exit interview sessions
     const records = useMemo(() => {
-        const voiceMapped = voiceRecords.map((v, i) => ({
+        return voiceRecords.map((v, i) => ({
             ...v,
-            realId: v.id, // preserved localStorage ID
+            realId: v.id, // preserved ID
             id: v.id || `voice_${i + 1}`,
             email: v.email || 'voice-interview@lspu.edu.ph',
             source: 'voice_interview'
         }));
-        return [...voiceMapped, ...csvRecords];
-    }, [csvRecords, voiceRecords]);
+    }, [voiceRecords]);
 
     // Handle delete
-    const handleDeleteRecord = (record, e) => {
+    const handleDeleteRecord = async (record, e) => {
         if (e) e.stopPropagation();
         if (!window.confirm(`Are you sure you want to delete the interview entry for "${record.name}"?`)) {
             return;
         }
-        deleteInterviewTranscript(record.realId || record.id);
+        await deleteInterviewTranscriptFromDB(record.realId || record.id);
         refreshVoiceRecords();
         if (selectedRecord && (selectedRecord.id === record.id || selectedRecord.realId === record.realId)) {
             setSelectedRecord(null);
         }
     };
 
-    // Filter logic
+    // Filter & Sort logic
     const filteredRecords = useMemo(() => {
-        return records.filter(r => {
+        const filtered = records.filter(r => {
             const matchesSearch =
                 (r.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
                 (r.studentId || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -72,7 +71,26 @@ export default function DatasetTable() {
 
             return matchesSearch && matchesProgram && matchesSentiment;
         });
-    }, [records, searchTerm, programFilter, sentimentFilter]);
+
+        return filtered.sort((a, b) => {
+            if (sortBy === 'AZ') {
+                return (a.name || '').localeCompare(b.name || '');
+            }
+            if (sortBy === 'ZA') {
+                return (b.name || '').localeCompare(a.name || '');
+            }
+            if (sortBy === 'OLDEST') {
+                return new Date(a.timestamp || 0) - new Date(b.timestamp || 0);
+            }
+            if (sortBy === 'NEWEST') {
+                return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
+            }
+            if (sortBy === 'RATING_HIGH') {
+                return (b.ratings?.overallAvg || 0) - (a.ratings?.overallAvg || 0);
+            }
+            return 0;
+        });
+    }, [records, searchTerm, programFilter, sentimentFilter, sortBy]);
 
     // CSV Export
     const exportCSV = () => {
@@ -109,12 +127,12 @@ export default function DatasetTable() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 glass-panel rounded-3xl border border-indigo-500/20">
                 <div>
                     <div className="flex items-center space-x-2 text-xs font-mono text-indigo-400 mb-1">
-                        <FileSpreadsheet className="w-4 h-4 text-amber-400" />
-                        <span>LSPU Alumni Office Dataset</span>
+                        <Database className="w-4 h-4 text-amber-400" />
+                        <span>PostgreSQL Database Directory</span>
                     </div>
-                    <h2 className="text-2xl font-bold text-white">{records.length} Exit Interview Dataset Directory</h2>
+                    <h2 className="text-2xl font-bold text-white">{records.length} Saved Exit Interview Sessions</h2>
                     <p className="text-slate-400 text-sm mt-1">
-                        Search, filter, inspect, and manage exit interview transcripts from the College of Computer Studies.
+                        Search, filter, inspect, and manage exit interview transcripts saved in your PostgreSQL database.
                     </p>
                 </div>
 
@@ -140,12 +158,28 @@ export default function DatasetTable() {
                     />
                 </div>
 
-                <div className="flex items-center space-x-3">
+                <div className="flex flex-wrap items-center gap-3">
+                    {/* Sort Order Dropdown */}
+                    <div className="flex items-center space-x-1.5 px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-slate-200 text-xs font-mono">
+                        <ArrowUpDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <select
+                            value={sortBy}
+                            onChange={(e) => setSortBy(e.target.value)}
+                            className="bg-transparent text-slate-200 text-xs font-mono focus:outline-none cursor-pointer"
+                        >
+                            <option value="NEWEST" className="bg-slate-900 text-slate-200">Newest to Oldest</option>
+                            <option value="OLDEST" className="bg-slate-900 text-slate-200">Oldest to Newest</option>
+                            <option value="AZ" className="bg-slate-900 text-slate-200">Alphabetical (A - Z)</option>
+                            <option value="ZA" className="bg-slate-900 text-slate-200">Alphabetical (Z - A)</option>
+                            <option value="RATING_HIGH" className="bg-slate-900 text-slate-200">Rating (Highest First)</option>
+                        </select>
+                    </div>
+
                     {/* Program Filter */}
                     <select
                         value={programFilter}
                         onChange={(e) => setProgramFilter(e.target.value)}
-                        className="px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-200 text-xs font-mono focus:outline-none"
+                        className="px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-200 text-xs font-mono focus:outline-none cursor-pointer"
                     >
                         <option value="ALL">All Programs</option>
                         <option value="BSIT">BSIT Only</option>
@@ -156,7 +190,7 @@ export default function DatasetTable() {
                     <select
                         value={sentimentFilter}
                         onChange={(e) => setSentimentFilter(e.target.value)}
-                        className="px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-200 text-xs font-mono focus:outline-none"
+                        className="px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-200 text-xs font-mono focus:outline-none cursor-pointer"
                     >
                         <option value="ALL">All Sentiments</option>
                         <option value="Positive">Positive</option>
@@ -182,59 +216,71 @@ export default function DatasetTable() {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-800/60">
-                            {filteredRecords.map((r) => (
-                                <tr key={r.id} className="hover:bg-slate-900/50 transition-colors">
-                                    <td className="p-4">
-                                        <div className="font-bold text-white flex items-center gap-1.5">
-                                            {r.name}
-                                            {r.source === 'voice_interview' && (
-                                                <span className="px-1.5 py-0.5 rounded text-[9px] bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-mono">🎙️ Voice</span>
-                                            )}
-                                        </div>
-                                        <div className="text-[11px] text-indigo-400 font-mono">{r.studentId}</div>
-                                    </td>
-                                    <td className="p-4 text-slate-300 font-mono text-[11px]">
-                                        {r.program.includes('BSIT') ? 'BSIT' : r.program.includes('BSCS') ? 'BSCS' : r.program} ({r.graduationYear})
-                                    </td>
-                                    <td className="p-4 text-slate-300">{r.capstoneRole}</td>
-                                    <td className="p-4 font-mono font-bold text-amber-300">
-                                        {r.ratings.overallAvg} / 5.0
-                                    </td>
-                                    <td className="p-4 text-slate-300 text-[11px]">
-                                        <span className="line-clamp-1">{r.employmentStatus}</span>
-                                    </td>
-                                    <td className="p-4">
-                                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${r.sentiment.label === 'Positive'
-                                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                            : r.sentiment.label === 'Negative'
-                                                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                                                : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                                            }`}>
-                                            {r.sentiment.label}
-                                        </span>
-                                    </td>
-                                    <td className="p-4 text-center">
-                                        <div className="flex items-center justify-center space-x-1.5">
-                                            <button
-                                                onClick={() => setSelectedRecord(r)}
-                                                className="p-2 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white transition-all"
-                                                title="Inspect Full Transcript"
-                                            >
-                                                <Eye className="w-4 h-4" />
-                                            </button>
-                                            {r.source === 'voice_interview' && (
-                                                <button
-                                                    onClick={(e) => handleDeleteRecord(r, e)}
-                                                    className="p-2 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-400 hover:text-white transition-all"
-                                                    title="Delete Voice Transcript Entry"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
-                                            )}
-                                        </div>
+                            {filteredRecords.length === 0 ? (
+                                <tr>
+                                    <td colSpan="7" className="p-8 text-center text-slate-400 space-y-2">
+                                        <Database className="w-8 h-8 text-indigo-400 mx-auto opacity-50 mb-2" />
+                                        <p className="font-semibold text-slate-300 text-sm">No database exit interview sessions found</p>
+                                        <p className="text-xs text-slate-500 max-w-md mx-auto">
+                                            Complete a voice exit interview in the <strong>AI Voice Interview</strong> tab to save entries directly into your PostgreSQL database.
+                                        </p>
                                     </td>
                                 </tr>
-                            ))}
+                            ) : (
+                                filteredRecords.map((r) => (
+                                    <tr key={r.id} className="hover:bg-slate-900/50 transition-colors">
+                                        <td className="p-4">
+                                            <div className="font-bold text-white flex items-center gap-1.5">
+                                                {r.name}
+                                                {r.source === 'voice_interview' && (
+                                                    <span className="px-1.5 py-0.5 rounded text-[9px] bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-mono">🎙️ Voice</span>
+                                                )}
+                                            </div>
+                                            <div className="text-[11px] text-indigo-400 font-mono">{r.studentId}</div>
+                                        </td>
+                                        <td className="p-4 text-slate-300 font-mono text-[11px]">
+                                            {r.program.includes('BSIT') ? 'BSIT' : r.program.includes('BSCS') ? 'BSCS' : r.program} ({r.graduationYear})
+                                        </td>
+                                        <td className="p-4 text-slate-300">{r.capstoneRole}</td>
+                                        <td className="p-4 font-mono font-bold text-amber-300">
+                                            {r.ratings.overallAvg} / 5.0
+                                        </td>
+                                        <td className="p-4 text-slate-300 text-[11px]">
+                                            <span className="line-clamp-1">{r.employmentStatus}</span>
+                                        </td>
+                                        <td className="p-4">
+                                            <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${r.sentiment.label === 'Positive'
+                                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                                : r.sentiment.label === 'Negative'
+                                                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                                    : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                                }`}>
+                                                {r.sentiment.label}
+                                            </span>
+                                        </td>
+                                        <td className="p-4 text-center">
+                                            <div className="flex items-center justify-center space-x-1.5">
+                                                <button
+                                                    onClick={() => setSelectedRecord(r)}
+                                                    className="p-2 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-300 hover:text-white transition-all"
+                                                    title="Inspect Full Transcript"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                </button>
+                                                {r.source === 'voice_interview' && (
+                                                    <button
+                                                        onClick={(e) => handleDeleteRecord(r, e)}
+                                                        className="p-2 rounded-lg bg-slate-800 hover:bg-rose-600 text-slate-400 hover:text-white transition-all"
+                                                        title="Delete Voice Transcript Entry"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
                         </tbody>
                     </table>
                 </div>

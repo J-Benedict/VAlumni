@@ -480,3 +480,92 @@ export function generateThematicSummaries(records = []) {
     };
 }
 
+/**
+ * Asynchronous Google AI Studio API (Gemini Flash) Post-Processor
+ * Refines low-latency Web Speech transcripts for specific survey question constraints:
+ * - Middle Initial: single uppercase letter A-Z or N/A
+ * - Rating (1-5): single integer digit 1-5
+ * - Student ID: formatted 8-digit / XXXX-XXXX string
+ * - Names & Voice Text: clean speech stutters & correct phonetic misspellings
+ */
+export async function refineTranscriptWithGemini(rawTranscript, questionObj, customApiKey = '') {
+    if (!rawTranscript || typeof rawTranscript !== 'string' || !rawTranscript.trim()) {
+        return rawTranscript || '';
+    }
+
+    // Retrieve API key from custom parameter, Vite environment, or localStorage
+    const apiKey = customApiKey ||
+        (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) ||
+        (typeof localStorage !== 'undefined' && localStorage.getItem('valumni_gemini_api_key')) ||
+        '';
+
+    // Fallback to client-side rule-based correctors if no API key present
+    if (!apiKey || apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
+        return applyClientSideRuleFallback(rawTranscript, questionObj);
+    }
+
+    const { id, type, question } = questionObj || {};
+    let systemInstruction = "";
+
+    if (id === 'demo_middleinitial') {
+        systemInstruction = "The user was asked for their Middle Initial. Extract and output ONLY a single uppercase letter (A-Z) followed by a period (e.g., 'M.') or 'N/A'. Do not include any explanation or extra words.";
+    } else if (type === 'rating') {
+        systemInstruction = "The user was asked to rate an aspect of their college experience on a scale of 1 to 5. Extract and output ONLY a single integer digit between 1 and 5. Do not include any words, symbols, or punctuation.";
+    } else if (id === 'demo_studentid') {
+        systemInstruction = "The user stated their Student ID number. Format and output ONLY the 8-digit student ID formatted as XXXX-XXXX (e.g. '0123-0456'). Output ONLY the formatted numbers.";
+    } else if (id === 'demo_firstname' || id === 'demo_lastname') {
+        systemInstruction = "The user stated their name. Correct any phonetic misrecognitions of Filipino names (e.g. Dela Cruz, Hornilla, Santos, Dimaculangan). Return proper capitalized Name format only.";
+    } else {
+        systemInstruction = "Clean up this spoken transcript from a survey. Remove speech stutters (um, ah, like), correct technical computing terminology (e.g., Python, SQL, React, Docker, AWS), and return a clear, grammatically corrected answer. Preserve the user's exact meaning.";
+    }
+
+    try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: "user",
+                        parts: [
+                            { text: `Question asked: "${question || ''}"\nRaw Spoken Transcript: "${rawTranscript}"\n\nInstructions: ${systemInstruction}` }
+                        ]
+                    }
+                ],
+                generationConfig: {
+                    temperature: 0.1,
+                    maxOutputTokens: 64
+                }
+            })
+        });
+
+        if (!response.ok) {
+            console.warn('Gemini API returned error status:', response.status);
+            return applyClientSideRuleFallback(rawTranscript, questionObj);
+        }
+
+        const data = await response.json();
+        const refinedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+        if (refinedText) {
+            return refinedText.replace(/^["']|["']$/g, '');
+        }
+    } catch (err) {
+        console.warn('Gemini API post-processing failed, using fallback:', err);
+    }
+
+    return applyClientSideRuleFallback(rawTranscript, questionObj);
+}
+
+function applyClientSideRuleFallback(rawTranscript, activeQ) {
+    if (!activeQ) return rawTranscript;
+    let text = rawTranscript;
+    if (activeQ.id === 'demo_lastname') text = correctFilipinoName(text, 'lastname');
+    else if (activeQ.id === 'demo_firstname') text = correctFilipinoName(text, 'firstname');
+    else if (activeQ.id === 'demo_middleinitial') text = correctFilipinoName(text, 'middleinitial');
+    else if (activeQ.id === 'demo_studentid' || activeQ.id === 'demo_grad_year' || activeQ.type === 'rating') {
+        text = convertWordsToDigits(text);
+    }
+    return text;
+}
+
