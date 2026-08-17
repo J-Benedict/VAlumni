@@ -1,8 +1,4 @@
-/**
- * VAlumni AI Service
- * Handles Speech Processing, Sentiment Analysis, Response Summarization,
- * and AI Voice Assistant Interaction Logic conforming to LSPU Exit Interview Survey Structure.
- */
+import philippineNames from '../data/philippineNames.json';
 
 const POSITIVE_KEYWORDS = [
     'great', 'rewarding', 'excellent', 'useful', 'helpful', 'satisfied', 'confident',
@@ -102,6 +98,13 @@ export function calculateWER(groundTruth, hypothesis) {
  * Corrects common speech recognition misrecognitions and standardizes Philippine surname prefixes.
  */
 const FILIPINO_PHONETIC_MAP = [
+    // First Name Phonetic Corrections (Standardizing local/English phonetic variants)
+    { pattern: /\b(riley|rylee|raylee|ryley|rai\s+lee)\b/gi, replacement: "Railey" },
+    { pattern: /\b(bryan|brian|bryen)\b/gi, replacement: "Bryan" },
+    { pattern: /\b(john\s+paul|jon\s+paul|jan\s+paul)\b/gi, replacement: "John Paul" },
+    { pattern: /\b(mark\s+anthony|marc\s+anthony)\b/gi, replacement: "Mark Anthony" },
+
+    // Surname Phonetic Corrections
     { pattern: /\b(cornelia|cornilla|ornelia|ornilla|cornella|cornellya|hor\s+nilla|or\s+neeya)\b/gi, replacement: "Hornilla" },
     { pattern: /\b(day\s+la\s+cruise|day\s+la\s+cruz|de\s+la\s+cruz|dela\s+cruz|dela\s+cruise)\b/gi, replacement: "Dela Cruz" },
     { pattern: /\b(de\s+los\s+santos|delos\s+santos|day\s+los\s+santos)\b/gi, replacement: "De Los Santos" },
@@ -192,6 +195,53 @@ export function convertWordsToDigits(rawText) {
     return cleanedDigits || rawText;
 }
 
+export function getNameSpellingSuggestions(rawText) {
+    if (!rawText || typeof rawText !== 'string') return [];
+    const text = rawText.trim().toLowerCase();
+    const suggestions = [];
+
+    // 1. Check known phonetic pairs
+    if (/\b(riley|railey|rylee|raylee|ryley)\b/i.test(text)) {
+        suggestions.push("Railey", "Riley", "Rylee", "Reilly");
+    }
+    if (/\b(bryan|brian|bryen)\b/i.test(text)) {
+        suggestions.push("Bryan", "Brian", "Bryen");
+    }
+    if (/\b(john\s+paul|jon\s+paul|jan\s+paul)\b/i.test(text)) {
+        suggestions.push("John Paul", "Jon Paul", "Jan Paul");
+    }
+    if (/\b(dela\s+cruz|de\s+la\s+cruz|de\s+la\s+cruise)\b/i.test(text)) {
+        suggestions.push("Dela Cruz", "De La Cruz", "De la Cruz");
+    }
+    if (/\b(hornilla|cornelia|cornilla)\b/i.test(text)) {
+        suggestions.push("Hornilla", "Cornelia", "Cornilla");
+    }
+    if (/\b(reyes|rays|reyis)\b/i.test(text)) {
+        suggestions.push("Reyes", "Reyis");
+    }
+
+    // 2. Search Philippine dataset for matching names (first names & surnames)
+    if (philippineNames) {
+        const words = text.split(/\s+/);
+        words.forEach(w => {
+            if (w.length >= 3) {
+                // Match first names
+                if (philippineNames.firstNames) {
+                    const matchFn = philippineNames.firstNames.filter(fn => fn.toLowerCase().includes(w) || w.includes(fn.toLowerCase()));
+                    suggestions.push(...matchFn.slice(0, 3));
+                }
+                // Match surnames
+                if (philippineNames.surnames) {
+                    const matchSn = philippineNames.surnames.filter(sn => sn.toLowerCase().includes(w) || w.includes(sn.toLowerCase()));
+                    suggestions.push(...matchSn.slice(0, 3));
+                }
+            }
+        });
+    }
+
+    return Array.from(new Set(suggestions)).slice(0, 6);
+}
+
 export function correctFilipinoName(rawText, fieldType = 'lastname') {
     if (!rawText || typeof rawText !== 'string') return '';
 
@@ -208,15 +258,16 @@ export function correctFilipinoName(rawText, fieldType = 'lastname') {
         return firstLetter ? firstLetter.toUpperCase() + '.' : '';
     }
 
+    // Apply phonetic map corrections (for both firstname and lastname)
+    FILIPINO_PHONETIC_MAP.forEach(({ pattern, replacement }) => {
+        cleaned = cleaned.replace(pattern, replacement);
+    });
+
     if (fieldType === 'firstname') {
         return cleaned.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
     }
 
     // Default: Last Name / Surname correction
-    FILIPINO_PHONETIC_MAP.forEach(({ pattern, replacement }) => {
-        cleaned = cleaned.replace(pattern, replacement);
-    });
-
     cleaned = cleaned.split(/\s+/).map(word => {
         if (word.length === 2 && word.endsWith('.')) {
             return word.toUpperCase();
@@ -514,7 +565,10 @@ export async function refineTranscriptWithGemini(rawTranscript, questionObj, cus
     } else if (id === 'demo_studentid') {
         systemInstruction = "The user stated their Student ID number. Format and output ONLY the 8-digit student ID formatted as XXXX-XXXX (e.g. '0123-0456'). Output ONLY the formatted numbers.";
     } else if (id === 'demo_firstname' || id === 'demo_lastname') {
-        systemInstruction = "The user stated their name. Correct any phonetic misrecognitions of Filipino names (e.g. Dela Cruz, Hornilla, Santos, Dimaculangan). Return proper capitalized Name format only.";
+        const sampleContext = id === 'demo_firstname'
+            ? (philippineNames?.firstNames ? philippineNames.firstNames.slice(0, 50).join(', ') : 'Maria, Juan, Railey, Bryan, Mark')
+            : (philippineNames?.surnames ? philippineNames.surnames.slice(0, 50).join(', ') : 'Dela Cruz, Santos, Reyes, Hornilla, Dimaculangan');
+        systemInstruction = `The user stated their name. Correct any speech recognition phonetic misrecognitions using Philippine name conventions (e.g. ${sampleContext}). Return proper capitalized Name format only, with no surrounding punctuation or quotes.`;
     } else {
         systemInstruction = "Clean up this spoken transcript from a survey. Remove speech stutters (um, ah, like), correct technical computing terminology (e.g., Python, SQL, React, Docker, AWS), and return a clear, grammatically corrected answer. Preserve the user's exact meaning.";
     }

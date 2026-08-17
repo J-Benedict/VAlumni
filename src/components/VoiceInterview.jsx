@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits, refineTranscriptWithGemini } from '../services/aiService';
+import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits, refineTranscriptWithGemini, getNameSpellingSuggestions } from '../services/aiService';
 import { saveInterviewTranscript } from '../utils/transcriptStorage';
 import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock, Key } from 'lucide-react';
 
@@ -680,16 +680,42 @@ export default function VoiceInterview({ onInterviewComplete }) {
                             )}
                         </div>
 
-                        {/* Voice Display Speech Box (Non-editable as requested!) */}
-                        <div className="p-5 rounded-2xl bg-slate-950 border border-slate-800 min-h-[100px] flex items-center justify-center relative">
-                            {liveTranscript ? (
-                                <p className="text-sm font-sans text-white leading-relaxed text-center font-medium">
-                                    "{liveTranscript}"
-                                </p>
-                            ) : (
-                                <div className="text-center space-y-1 text-slate-500 text-xs italic font-mono">
-                                    <p>Press the button below and speak into your microphone.</p>
-                                    <p className="text-[10px] text-slate-600">(Your transcribed speech will appear here automatically)</p>
+                        {/* Voice Display Speech Box (Editable Text Area) */}
+                        <div className="space-y-3">
+                            <textarea
+                                value={liveTranscript}
+                                onChange={(e) => {
+                                    setLiveTranscript(e.target.value);
+                                    setTranscriptAccumulated(e.target.value);
+                                }}
+                                placeholder="Press the microphone button below to speak, or click here to type/edit your answer..."
+                                rows={currentQuestion.id === 'demo_firstname' || currentQuestion.id === 'demo_lastname' ? 2 : 3}
+                                className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-sm font-sans text-white leading-relaxed text-center font-medium focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none"
+                            />
+
+                            {/* Name Spelling Suggestion Chips (e.g. Railey, Riley, Bryan, Brian) */}
+                            {getNameSpellingSuggestions(liveTranscript).length > 0 && (
+                                <div className="p-3 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 space-y-2 text-center">
+                                    <span className="text-xs font-mono text-indigo-300 font-semibold block">
+                                        ✨ Spelling Suggestions (Tap to select your exact name):
+                                    </span>
+                                    <div className="flex flex-wrap items-center justify-center gap-2">
+                                        {getNameSpellingSuggestions(liveTranscript).map((candidate) => (
+                                            <button
+                                                key={candidate}
+                                                onClick={() => {
+                                                    setLiveTranscript(candidate);
+                                                    setTranscriptAccumulated(candidate);
+                                                }}
+                                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${liveTranscript === candidate
+                                                    ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md scale-105'
+                                                    : 'bg-slate-900 text-slate-200 border-slate-700 hover:border-indigo-400 hover:bg-indigo-900/60'
+                                                    }`}
+                                            >
+                                                {candidate}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
                         </div>
