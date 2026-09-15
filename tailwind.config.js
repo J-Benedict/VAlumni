@@ -7,6 +7,11 @@ export default {
     darkMode: 'class',
     theme: {
         extend: {
+            fontFamily: {
+                serif: ['Merriweather', 'Playfair Display', 'Cinzel', 'Georgia', 'serif'],
+                sans: ['Inter', 'sans-serif'],
+                mono: ['JetBrains Mono', 'monospace'],
+            },
             colors: {
                 lspu: {
                     blue: '#0F2C59',
@@ -16,6 +21,23 @@ export default {
                     emerald: '#10B981',
                     rose: '#F43F5E',
                     purple: '#8B5CF6'
+                },
+                sunset: {
+                    header: '#d89b65',
+                    headerHover: '#c88a53',
+                    card: '#d9d9d9',
+                    btn: '#d69e62',
+                    btnHover: '#c2874a',
+                    50: '#fff7ed',
+                    100: '#ffedd5',
+                    200: '#fed7aa',
+                    300: '#fdba74',
+                    400: '#fb923c',
+                    500: '#f97316',
+                    600: '#ea580c',
+                    700: '#c2410c',
+                    800: '#9a3412',
+                    900: '#7c2d12',
                 }
             },
             animation: {

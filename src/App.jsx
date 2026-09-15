@@ -1,57 +1,88 @@
-import React, { useState } from 'react';
-import Navbar from './components/Navbar';
+import React, { useState, useEffect } from 'react';
+import LandingPage from './components/LandingPage';
 import VoiceInterview from './components/VoiceInterview';
-import WorkflowVisualizer from './components/WorkflowVisualizer';
-import Dashboard from './components/Dashboard';
-import TestingSuite from './components/TestingSuite';
-import DatasetTable from './components/DatasetTable';
-import { ShieldCheck, Heart } from 'lucide-react';
+import AdminPortal from './components/AdminPortal';
+import AdminLoginModal from './components/AdminLoginModal';
 
 export default function App() {
-    const [activeTab, setActiveTab] = useState('interview');
-    const [sessionCount, setSessionCount] = useState(1);
+    // Current Active View: 'landing' | 'interview' | 'admin'
+    const [view, setView] = useState(() => {
+        const savedAdmin = sessionStorage.getItem('valumni_admin_user');
+        if (savedAdmin) return 'admin';
+        const savedView = sessionStorage.getItem('valumni_active_view');
+        return savedView || 'landing';
+    });
+
+    const [adminUser, setAdminUser] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('valumni_admin_user');
+            return saved ? JSON.parse(saved) : null;
+        } catch (e) {
+            return null;
+        }
+    });
+
+    const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
+
+    // Reliable view navigation that survives page refreshes
+    const navigateTo = (nextView) => {
+        setView(nextView);
+        sessionStorage.setItem('valumni_active_view', nextView);
+    };
+
+    // Handle successful admin authentication
+    const handleLoginSuccess = (user) => {
+        setAdminUser(user);
+        sessionStorage.setItem('valumni_admin_user', JSON.stringify(user));
+        navigateTo('admin');
+    };
+
+    // Handle admin logout
+    const handleLogout = () => {
+        setAdminUser(null);
+        sessionStorage.removeItem('valumni_admin_user');
+        navigateTo('landing');
+    };
 
     const handleInterviewComplete = (interviewData) => {
-        console.log('Exit interview data captured:', interviewData);
-        setSessionCount(prev => prev + 1);
+        console.log('Exit interview completed and persisted:', interviewData);
     };
 
     return (
-        <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
-            {/* Navigation Header */}
-            <Navbar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <div className="min-h-screen bg-cloud-gradient font-sans antialiased text-slate-800">
+            {/* View 1: Landing Page (Public Student View) */}
+            {view === 'landing' && (
+                <LandingPage
+                    onStartSession={() => navigateTo('interview')}
+                    onOpenAdminLogin={() => setIsAdminLoginOpen(true)}
+                />
+            )}
 
-            {/* Main Content View Switcher */}
-            <main className="flex-1 pb-16">
-                {activeTab === 'interview' && (
-                    <VoiceInterview onInterviewComplete={handleInterviewComplete} />
-                )}
-                {activeTab === 'workflow' && (
-                    <WorkflowVisualizer />
-                )}
-                {activeTab === 'dashboard' && (
-                    <Dashboard setActiveTab={setActiveTab} />
-                )}
-                {activeTab === 'testing' && (
-                    <TestingSuite />
-                )}
-                {activeTab === 'dataset' && (
-                    <DatasetTable />
-                )}
-            </main>
-
-            {/* Footer */}
-            <footer className="glass-panel border-t border-slate-800/80 py-6">
-                <div className="max-w-7xl mx-auto px-4 text-center space-y-2">
-                    <div className="flex items-center justify-center space-x-2 text-xs font-mono text-slate-400">
-                        <span>VAlumni System v1.0</span>
-                        <span>•</span>
-                        <span className="text-amber-400 font-semibold">LSPU College of Computer Studies</span>
-                        <span>•</span>
-                        <span className="text-indigo-400">Group CS3B-09</span>
-                    </div>
+            {/* View 2: Active Voice Interview Session */}
+            {view === 'interview' && (
+                <div className="min-h-screen bg-cloud-gradient flex flex-col">
+                    <VoiceInterview
+                        initialStage="survey"
+                        onInterviewComplete={handleInterviewComplete}
+                        onExitToLanding={() => navigateTo('landing')}
+                    />
                 </div>
-            </footer>
+            )}
+
+            {/* View 3: Admin Portal */}
+            {view === 'admin' && (
+                <AdminPortal
+                    adminUser={adminUser}
+                    onLogout={handleLogout}
+                />
+            )}
+
+            {/* Admin Login Dialog Modal */}
+            <AdminLoginModal
+                isOpen={isAdminLoginOpen}
+                onClose={() => setIsAdminLoginOpen(false)}
+                onLoginSuccess={handleLoginSuccess}
+            />
         </div>
     );
 }

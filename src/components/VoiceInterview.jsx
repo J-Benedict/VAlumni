@@ -1,26 +1,42 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ccsLogo from '../../assets/ccs_logo.png';
 import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits, refineTranscriptWithGemini, getNameSpellingSuggestions } from '../services/aiService';
-import { saveInterviewTranscript } from '../utils/transcriptStorage';
-import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock, Key } from 'lucide-react';
+import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock } from 'lucide-react';
 
-export default function VoiceInterview({ onInterviewComplete }) {
+export default function VoiceInterview({ onInterviewComplete, onExitToLanding, initialStage = 'survey' }) {
     // Navigation & Flow State: 'landing' -> 'privacy' -> 'survey' -> 'summary'
-    const [flowStage, setFlowStage] = useState('landing');
-    const [privacyAgreed, setPrivacyAgreed] = useState(false);
+    const [flowStage, setFlowStage] = useState(initialStage);
+    const [privacyAgreed, setPrivacyAgreed] = useState(true);
 
-    // Survey Question Navigation Indexing
+    // Survey Question Navigation Indexing with Session Persistence across page refreshes
     const allQuestions = LSPU_SURVEY_STRUCTURE.flatMap(sec => sec.questions.map(q => ({ ...q, sectionTitle: sec.sectionTitle, sectionId: sec.sectionId })));
-    const [currentQIndex, setCurrentQIndex] = useState(0);
+    const [currentQIndex, setCurrentQIndex] = useState(() => {
+        const saved = sessionStorage.getItem('valumni_current_qindex');
+        const parsed = saved !== null ? parseInt(saved, 10) : 0;
+        return (parsed >= 0 && parsed < allQuestions.length) ? parsed : 0;
+    });
     const currentQuestion = allQuestions[currentQIndex];
 
     // User Responses Dictionary { questionId: responseTextOrValue }
-    const [responses, setResponses] = useState({});
+    const [responses, setResponses] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('valumni_interview_responses');
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) {
+            return {};
+        }
+    });
 
     // Voice Recognition (STT) State
     const [isListening, setIsListening] = useState(false);
     const [isRefining, setIsRefining] = useState(false);
-    const [apiKey, setApiKey] = useState(() => (typeof localStorage !== 'undefined' && localStorage.getItem('valumni_gemini_api_key')) || '');
-    const [showKeyInput, setShowKeyInput] = useState(false);
+    const [showExitModal, setShowExitModal] = useState(false);
+
+    // faster-whisper (Whisper Large-v3-Turbo) State
+    const [sttStatus, setSttStatus] = useState({ online: false, model: '', device: '' });
+    const [isTranscribingWithWhisper, setIsTranscribingWithWhisper] = useState(false);
+    const mediaRecorderRef = useRef(null);
+    const audioChunksRef = useRef([]);
 
     const [liveTranscript, setLiveTranscript] = useState('');
     const [transcriptAccumulated, setTranscriptAccumulated] = useState(''); // Prevents transcript deletion on mic re-press!
@@ -41,46 +57,156 @@ export default function VoiceInterview({ onInterviewComplete }) {
     const streamRef = useRef(null);
     const animFrameRef = useRef(null);
 
-    // Keep currentQuestionRef synchronized with active question
+    // Keep currentQuestionRef synchronized with active question & persist session progress
     useEffect(() => {
         currentQuestionRef.current = currentQuestion;
-    }, [currentQuestion]);
+        sessionStorage.setItem('valumni_current_qindex', currentQIndex.toString());
+    }, [currentQuestion, currentQIndex]);
 
-    // Start Web Audio API Microphone Signal Meter for Laptop Mics
+    useEffect(() => {
+        sessionStorage.setItem('valumni_interview_responses', JSON.stringify(responses));
+    }, [responses]);
+
+    // Poll Whisper STT Microservice Status
+    useEffect(() => {
+        const checkStt = async () => {
+            try {
+                const res = await fetch('/api/stt/status');
+                if (res.ok) {
+                    const data = await res.json();
+                    setSttStatus(data);
+                }
+            } catch (e) {
+                setSttStatus({ online: false });
+            }
+        };
+        checkStt();
+        const interval = setInterval(checkStt, 6000);
+        return () => clearInterval(interval);
+    }, []);
+
+
+    // Transcribe recorded audio with Whisper Large-v3-Turbo
+    const transcribeWithWhisper = async () => {
+        if (!sttStatus.online || audioChunksRef.current.length === 0) {
+            setIsTranscribingWithWhisper(false);
+            return;
+        }
+        setIsTranscribingWithWhisper(true);
+        const timeoutId = setTimeout(() => setIsTranscribingWithWhisper(false), 4000);
+        try {
+            const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+            const formData = new FormData();
+            formData.append('audio', blob, 'recording.webm');
+
+            const res = await fetch('/api/stt/transcribe', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && data.transcript && data.transcript.trim()) {
+                    const whisperText = data.transcript.trim();
+                    setLiveTranscript(prev => {
+                        const base = (prev || transcriptAccumulated || '').trim();
+                        if (!base) return whisperText;
+                        if (base.toLowerCase().includes(whisperText.toLowerCase())) return base;
+                        return `${base} ${whisperText}`.trim();
+                    });
+                    setTranscriptAccumulated(prev => {
+                        const base = (prev || '').trim();
+                        if (!base) return whisperText;
+                        if (base.toLowerCase().includes(whisperText.toLowerCase())) return base;
+                        return `${base} ${whisperText}`.trim();
+                    });
+                }
+            }
+        } catch (err) {
+            console.error('Whisper transcribe error:', err);
+        } finally {
+            clearTimeout(timeoutId);
+            setIsTranscribingWithWhisper(false);
+            audioChunksRef.current = [];
+        }
+    };
+
+    // Start Web Audio API Microphone Signal Meter & MediaRecorder using System Default Mic
     const startVolumeMeter = async () => {
+        if (streamRef.current && streamRef.current.active) return;
+
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             streamRef.current = stream;
-            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Start MediaRecorder for Whisper STT
+            try {
+                audioChunksRef.current = [];
+                const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm')) ? 'audio/webm' : '';
+                const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+                recorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) {
+                        audioChunksRef.current.push(e.data);
+                    }
+                };
+                recorder.start(250);
+                mediaRecorderRef.current = recorder;
+            } catch (recorderErr) {
+                console.warn('MediaRecorder init note:', recorderErr);
+            }
+
+            const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioCtxClass();
             audioContextRef.current = audioCtx;
+
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
             const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 64;
+            analyser.fftSize = 256;
             analyserRef.current = analyser;
             const source = audioCtx.createMediaStreamSource(stream);
             source.connect(analyser);
 
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const timeData = new Uint8Array(analyser.fftSize);
             const updateVolume = () => {
                 if (!analyserRef.current) return;
-                analyser.getByteFrequencyData(dataArray);
-                let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    sum += dataArray[i];
+                analyser.getByteTimeDomainData(timeData);
+                let sumSquares = 0;
+                for (let i = 0; i < timeData.length; i++) {
+                    const norm = (timeData[i] - 128) / 128;
+                    sumSquares += norm * norm;
                 }
-                const average = sum / dataArray.length;
-                const volumePercent = Math.min(100, Math.round((average / 128) * 100));
+                const rms = Math.sqrt(sumSquares / timeData.length);
+                const volumePercent = Math.min(100, Math.round(rms * 280));
                 setMicVolume(volumePercent);
                 animFrameRef.current = requestAnimationFrame(updateVolume);
             };
             updateVolume();
+            setIsListening(true);
         } catch (err) {
-            console.log('Mic volume meter start error:', err);
+            console.error('System default mic access error:', err);
+            stopVolumeMeter();
+            setIsListening(false);
+            shouldListenRef.current = false;
         }
     };
 
-    // Stop Web Audio API Volume Meter
+    // Stop Web Audio API Volume Meter & trigger Whisper STT
     const stopVolumeMeter = () => {
         if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+
+        // Stop MediaRecorder and transcribe
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try {
+                mediaRecorderRef.current.stop();
+            } catch (e) { }
+            setTimeout(() => {
+                transcribeWithWhisper();
+            }, 150);
+        }
+
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
             streamRef.current = null;
@@ -172,20 +298,20 @@ export default function VoiceInterview({ onInterviewComplete }) {
                     // Ignore no-speech pause and keep listening for laptop mics
                     return;
                 }
-                stopVolumeMeter();
+                if (event.error === 'not-allowed') {
+                    console.warn('Browser Web Speech permission was not allowed.');
+                }
             };
 
             rec.onend = () => {
-                stopVolumeMeter();
                 // Auto-restart Web Speech API if user hasn't explicitly clicked stop (vital for laptop mic pauses)
+                // Do NOT call stopVolumeMeter() here so the MediaStream and recorder stay active!
                 if (shouldListenRef.current) {
                     try {
                         rec.start();
-                    } catch (e) {
-                        setIsListening(false);
-                        shouldListenRef.current = false;
-                    }
+                    } catch (e) { }
                 } else {
+                    stopVolumeMeter();
                     setIsListening(false);
                 }
             };
@@ -231,9 +357,9 @@ export default function VoiceInterview({ onInterviewComplete }) {
     };
 
     // Toggle Voice Recording without deleting previous transcripts
-    const toggleListening = () => {
-        if (!speechSupported) {
-            alert('Web Speech API is not supported in your browser. Please use Google Chrome or Microsoft Edge.');
+    const toggleListening = async () => {
+        if (!speechSupported && !sttStatus.online) {
+            alert('Voice recording is not supported in this browser. Please use Google Chrome or Microsoft Edge.');
             return;
         }
 
@@ -252,11 +378,18 @@ export default function VoiceInterview({ onInterviewComplete }) {
             setIsListening(false);
         } else {
             shouldListenRef.current = true;
+            setIsListening(true);
             setTranscriptAccumulated(liveTranscript);
-            try {
-                recognitionRef.current.start();
-            } catch (err) {
-                console.log('Recognition start error:', err);
+
+            // Directly initiate microphone capture on user gesture
+            await startVolumeMeter();
+
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.start();
+                } catch (err) {
+                    console.log('Recognition start note:', err);
+                }
             }
         }
     };
@@ -276,7 +409,7 @@ export default function VoiceInterview({ onInterviewComplete }) {
         if (rawResponseText) {
             setIsRefining(true);
             try {
-                finalResponseText = await refineTranscriptWithGemini(rawResponseText, currentQuestion, apiKey);
+                finalResponseText = await refineTranscriptWithGemini(rawResponseText, currentQuestion);
                 setLiveTranscript(finalResponseText);
             } catch (err) {
                 console.error("Gemini post-processing error:", err);
@@ -462,364 +595,437 @@ export default function VoiceInterview({ onInterviewComplete }) {
     // --------------------------------------------------------------------------
     if (flowStage === 'survey') {
         return (
-            <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-                {/* Progress Header */}
-                <div className="glass-panel rounded-2xl p-4 border border-slate-800 flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                        <span className="text-xs font-mono px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                            Section 0{currentQuestion.sectionId} of 05
-                        </span>
-                        <h3 className="text-xs font-bold text-slate-300 hidden md:block">{currentQuestion.sectionTitle}</h3>
-                    </div>
+            <div className="min-h-screen flex flex-col bg-cloud-gradient text-slate-800 relative selection:bg-orange-500 selection:text-white overflow-x-hidden">
+                {/* Soft Ambient Cloud Highlights for visual depth */}
+                <div className="cloud-ambient w-[600px] h-[350px] bg-white top-16 left-1/4 -z-0 pointer-events-none"></div>
+                <div className="cloud-ambient w-[500px] h-[300px] bg-amber-200/25 bottom-10 right-10 -z-0 pointer-events-none"></div>
 
-                    <div className="flex items-center space-x-3">
-                        <span className="text-xs font-mono text-amber-300 font-bold">
-                            Question {currentQIndex + 1} / {allQuestions.length}
-                        </span>
-
-                        {/* Google AI Studio Gemini API Key Setting Button */}
-                        <button
-                            onClick={() => setShowKeyInput(!showKeyInput)}
-                            className={`flex items-center space-x-1.5 px-3 py-1 rounded-xl text-xs font-mono border transition-all ${apiKey
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                }`}
-                            title="Configure Google AI Studio API Key for Post-Processing"
-                        >
-                            <Key className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">{apiKey ? 'Gemini AI Active' : 'Set Gemini Key'}</span>
-                        </button>
-
-                        {/* TTS Mute Toggle */}
-                        <button
-                            onClick={() => {
-                                setTtsEnabled(!ttsEnabled);
-                                if (isSpeaking && synthRef.current) synthRef.current.cancel();
-                            }}
-                            className={`p-2 rounded-xl border transition-all ${ttsEnabled ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30' : 'bg-slate-800 text-slate-500 border-slate-800'
-                                }`}
-                            title={ttsEnabled ? "Mute Voice Assistant" : "Enable Voice Assistant"}
-                        >
-                            {ttsEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                        </button>
-                    </div>
-                </div>
-
-                {/* Gemini API Key Inline Configuration Modal / Bar */}
-                {showKeyInput && (
-                    <div className="glass-panel rounded-2xl p-4 border border-indigo-500/30 space-y-3 bg-slate-900/90">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-white flex items-center gap-2">
-                                <Key className="w-4 h-4 text-amber-400" />
-                                Google AI Studio API Key (Gemini Flash Post-Processor)
-                            </span>
-                            <button
-                                onClick={() => setShowKeyInput(false)}
-                                className="text-xs text-slate-400 hover:text-white"
-                            >
-                                ✕ Close
-                            </button>
-                        </div>
-                        <p className="text-[11px] text-slate-300">
-                            Paste your Google AI Studio API key below to enable intelligent post-processing for single letters (middle initial), ratings, and student IDs. Your key is saved locally in your browser.
-                        </p>
-                        <div className="flex gap-2">
-                            <input
-                                type="password"
-                                value={apiKey}
-                                onChange={(e) => {
-                                    setApiKey(e.target.value);
-                                    if (typeof localStorage !== 'undefined') {
-                                        localStorage.setItem('valumni_gemini_api_key', e.target.value);
-                                    }
-                                }}
-                                placeholder="AIzaSy..."
-                                className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-indigo-500"
-                            />
-                            <button
-                                onClick={() => setShowKeyInput(false)}
-                                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold"
-                            >
-                                Save Key
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-
-                {/* AI Voice Assistant Prompt Box */}
-                <div className="glass-panel rounded-3xl p-6 md:p-8 border border-indigo-500/30 space-y-4 relative overflow-hidden">
-                    <div className="flex items-start justify-between gap-4">
+                {/* Top Navigation Bar - Full-width layout matching landing page */}
+                <header className="relative z-20 w-full bg-[#d59e66] shadow-md border-b border-[#c28a52]/40">
+                    <div className="w-full px-4 sm:px-6 py-2 flex items-center justify-between">
+                        {/* Left: CCS Logo 60x60px + College & University Title */}
                         <div className="flex items-center space-x-3">
-                            <div className="p-3 rounded-2xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
-                                <Sparkles className="w-6 h-6 text-amber-400 animate-pulse" />
-                            </div>
+                            <img 
+                                src={ccsLogo} 
+                                alt="College of Computer Studies Logo" 
+                                style={{ width: '60px', height: '60px' }}
+                                className="w-[60px] h-[60px] object-contain drop-shadow-sm shrink-0"
+                            />
                             <div>
-                                <span className="text-xs font-mono text-indigo-400">AI Exit Interview Assistant</span>
-                                <h2 className="text-lg md:text-xl font-bold text-white leading-snug">{currentQuestion.question}</h2>
+                                <p className="text-sm sm:text-base font-serif font-bold text-slate-900 leading-tight">
+                                    College of Computer Studies
+                                </p>
+                                <p className="text-[11px] sm:text-xs font-mono text-slate-800/80 tracking-tight">
+                                    Laguna State Polytechnic University
+                                </p>
                             </div>
                         </div>
 
-                        <button
-                            onClick={() => speakText(currentQuestion.question)}
-                            className="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 shrink-0"
-                            title="Repeat AI Question Audio"
-                        >
-                            <Volume2 className={`w-4 h-4 ${isSpeaking ? 'text-amber-400 animate-bounce' : ''}`} />
-                        </button>
-                    </div>
+                        {/* Right: Sound / TTS Toggle and Exit Button */}
+                        <div className="flex items-center space-x-2 sm:space-x-3">
+                            {/* TTS Mute Toggle */}
+                            <button
+                                onClick={() => {
+                                    setTtsEnabled(!ttsEnabled);
+                                    if (isSpeaking && synthRef.current) synthRef.current.cancel();
+                                }}
+                                className={`p-2 rounded-xl border transition-all cursor-pointer ${
+                                    ttsEnabled 
+                                        ? 'bg-black/10 hover:bg-black/15 text-slate-900 border-black/15' 
+                                        : 'bg-black/20 text-slate-600 border-black/10'
+                                }`}
+                                title={ttsEnabled ? "Mute Voice Assistant Audio" : "Enable Voice Assistant Audio"}
+                                aria-label="Toggle Voice Assistant Audio"
+                            >
+                                {ttsEnabled ? <Volume2 className="w-5 h-5 text-slate-900" /> : <VolumeX className="w-5 h-5 text-slate-700" />}
+                            </button>
 
-                    {currentQuestion.promptHint && (
-                        <p className="text-xs font-mono text-slate-400 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
-                            💡 Hint / Format: <span className="text-indigo-300">{currentQuestion.promptHint}</span>
-                        </p>
-                    )}
-                </div>
-
-                {/* Choice or Rating Helper Buttons if applicable */}
-                {currentQuestion.type === 'choice' && (
-                    <div className="glass-panel rounded-3xl p-6 border border-slate-800 space-y-3">
-                        <label className="text-xs font-mono text-slate-400">Select option or speak your response:</label>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {currentQuestion.options.map((opt) => (
+                            {/* Exit Button with custom confirmation modal */}
+                            {onExitToLanding && (
                                 <button
-                                    key={opt}
-                                    onClick={() => handleSelectOption(opt)}
-                                    className={`p-4 rounded-2xl text-left text-xs font-semibold transition-all border ${liveTranscript === opt
-                                        ? 'bg-indigo-600 text-white border-indigo-400 shadow-lg shadow-indigo-600/30'
-                                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
-                                        }`}
+                                    onClick={() => setShowExitModal(true)}
+                                    className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-rose-700 text-white font-mono text-xs font-bold shadow-sm transition-all cursor-pointer flex items-center space-x-1"
+                                    title="Exit Interview Session"
                                 >
-                                    {opt}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
-
-                {currentQuestion.type === 'rating' && (
-                    <div className="glass-panel rounded-3xl p-6 border border-indigo-500/30 space-y-3">
-                        <label className="text-xs font-mono text-indigo-300 font-semibold">👆 Tap your rating below:</label>
-                        <div className="grid grid-cols-5 gap-3">
-                            {[1, 2, 3, 4, 5].map((val) => (
-                                <button
-                                    key={val}
-                                    onClick={() => handleSelectOption(val.toString())}
-                                    className={`p-5 rounded-2xl text-center font-bold text-lg transition-all border ${liveTranscript === val.toString()
-                                        ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-lg shadow-amber-500/30 scale-110'
-                                        : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800 hover:scale-105'
-                                        }`}
-                                >
-                                    {val}
-                                </button>
-                            ))}
-                        </div>
-                        <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 px-1">
-                            <span>1 = Poor</span>
-                            <span>5 = Excellent</span>
-                        </div>
-                        {liveTranscript && (
-                            <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-center">
-                                <span className="text-sm font-bold text-emerald-400">Selected: {liveTranscript}</span>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Quick Letter Selector Grid for Middle Initial */}
-                {currentQuestion.id === 'demo_middleinitial' && (
-                    <div className="glass-panel rounded-3xl p-5 border border-indigo-500/30 space-y-3">
-                        <label className="text-xs font-mono text-indigo-300 font-semibold">👆 Tap your Middle Initial below:</label>
-                        <div className="grid grid-cols-7 sm:grid-cols-10 gap-2">
-                            {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'N/A'].map((letter) => {
-                                const initialVal = letter === 'N/A' ? 'N/A' : letter + '.';
-                                return (
-                                    <button
-                                        key={letter}
-                                        onClick={() => handleSelectOption(initialVal)}
-                                        className={`p-3 rounded-xl font-bold text-sm transition-all border ${liveTranscript === initialVal
-                                            ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-500/30 scale-110'
-                                            : 'bg-slate-900/80 text-slate-300 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800 hover:scale-105'
-                                            }`}
-                                    >
-                                        {letter}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                        {liveTranscript && (
-                            <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-center">
-                                <span className="text-sm font-bold text-emerald-400">Selected: {liveTranscript}</span>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* VOICE INPUT DISPLAY CONTAINER — Hidden for rating and middle initial (button-only) */}
-                {currentQuestion.type !== 'rating' && currentQuestion.id !== 'demo_middleinitial' && (
-                    <div className="glass-panel rounded-3xl p-6 border border-slate-800 space-y-4">
-                        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                            <div className="flex items-center space-x-2">
-                                <Mic className={`w-4 h-4 ${isListening ? 'text-rose-500 animate-ping' : 'text-indigo-400'}`} />
-                                <h4 className="text-xs font-mono text-slate-300 font-semibold">
-                                    Transcribed Spoken Voice Response
-                                </h4>
-                            </div>
-
-                            {/* Clear Transcript Button */}
-                            {liveTranscript && (
-                                <button
-                                    onClick={() => {
-                                        setLiveTranscript('');
-                                        setTranscriptAccumulated('');
-                                    }}
-                                    className="text-[11px] font-mono text-rose-400 hover:text-rose-300 underline"
-                                >
-                                    Clear Audio Transcript
+                                    <span>✕ Exit</span>
                                 </button>
                             )}
                         </div>
+                    </div>
+                </header>
 
-                        {/* Voice Display Speech Box (Editable Text Area) */}
-                        <div className="space-y-3">
-                            <textarea
-                                value={liveTranscript}
-                                onChange={(e) => {
-                                    setLiveTranscript(e.target.value);
-                                    setTranscriptAccumulated(e.target.value);
-                                }}
-                                placeholder="Press the microphone button below to speak, or click here to type/edit your answer..."
-                                rows={currentQuestion.id === 'demo_firstname' || currentQuestion.id === 'demo_lastname' ? 2 : 3}
-                                className="w-full p-4 rounded-2xl bg-slate-950 border border-slate-800 text-sm font-sans text-white leading-relaxed text-center font-medium focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none"
+                {/* Custom Confirmation Exit Modal */}
+                {showExitModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/60 backdrop-blur-sm animate-fadeIn">
+                        <div className="w-full max-w-md rounded-3xl p-6 sm:p-8 border border-[#d8c8b6] shadow-2xl bg-[#fbf7f0] space-y-6 text-center text-stone-800">
+                            <div className="w-14 h-14 rounded-2xl bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto">
+                                <AlertCircle className="w-8 h-8" />
+                            </div>
+
+                            <div className="space-y-2">
+                                <h3 className="text-lg font-bold text-stone-900">Exit Interview Session?</h3>
+                                <p className="text-sm text-stone-600 leading-relaxed">
+                                    Exiting will terminate the current session and will not be saved.
+                                </p>
+                            </div>
+
+                            <div className="flex items-center justify-center gap-3 pt-2">
+                                <button
+                                    onClick={() => setShowExitModal(false)}
+                                    className="flex-1 px-5 py-3 rounded-xl bg-white hover:bg-[#f3eae0] text-stone-700 text-xs font-bold transition-all border border-[#d8c8b6] cursor-pointer shadow-xs"
+                                >
+                                    Cancel
+                                </button>
+
+                                <button
+                                    onClick={() => {
+                                        setShowExitModal(false);
+                                        if (synthRef.current) synthRef.current.cancel();
+                                        if (recognitionRef.current) {
+                                            try { recognitionRef.current.stop(); } catch (e) { }
+                                        }
+                                        stopVolumeMeter();
+                                        sessionStorage.removeItem('valumni_current_qindex');
+                                        sessionStorage.removeItem('valumni_interview_responses');
+                                        sessionStorage.setItem('valumni_active_view', 'landing');
+                                        onExitToLanding();
+                                    }}
+                                    className="flex-1 px-5 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-md shadow-rose-600/20 transition-all cursor-pointer"
+                                >
+                                    Exit
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Main Interview Body: Unified Whole Card */}
+                <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-6 md:py-8 max-w-4xl mx-auto w-full">
+                    {/* The Entire Section Made Whole: Complementary Sand & Parchment Palette */}
+                    <div className="w-full rounded-3xl overflow-hidden shadow-xl shadow-orange-950/10 border border-[#d8c8b6] bg-[#fbf7f0]/95 backdrop-blur-md text-stone-800 flex flex-col transition-all duration-300">
+                        {/* 1. Integrated Progress & Section Header */}
+                        <div className="px-6 py-4 bg-[#f3eae0] border-b border-[#e2d4c4] flex items-center justify-between flex-wrap gap-2">
+                            <div className="flex items-center space-x-3">
+                                <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-[#d59e66]/20 text-[#8c521f] border border-[#d59e66]/40">
+                                    Section 0{currentQuestion.sectionId} of 05
+                                </span>
+                                <h3 className="text-xs font-bold text-stone-700 hidden sm:block">
+                                    {currentQuestion.sectionTitle}
+                                </h3>
+                            </div>
+
+                            <div className="flex items-center space-x-2">
+                                <span className="text-xs font-mono text-[#9a5820] font-bold">
+                                    Question {currentQIndex + 1} / {allQuestions.length}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Thin Progress Bar Strip */}
+                        <div className="w-full h-1.5 bg-[#e4d6c6] overflow-hidden">
+                            <div 
+                                className="h-full bg-gradient-to-r from-[#d59e66] to-[#b97a3f] transition-all duration-300"
+                                style={{ width: `${((currentQIndex + 1) / allQuestions.length) * 100}%` }}
                             />
+                        </div>
 
-                            {/* Name Spelling Suggestion Chips (e.g. Railey, Riley, Bryan, Brian) */}
-                            {getNameSpellingSuggestions(liveTranscript).length > 0 && (
-                                <div className="p-3 rounded-2xl bg-indigo-950/40 border border-indigo-500/30 space-y-2 text-center">
-                                    <span className="text-xs font-mono text-indigo-300 font-semibold block">
-                                        ✨ Spelling Suggestions (Tap to select your exact name):
-                                    </span>
-                                    <div className="flex flex-wrap items-center justify-center gap-2">
-                                        {getNameSpellingSuggestions(liveTranscript).map((candidate) => (
+                        {/* 2. AI Voice Assistant Question Prompt Zone */}
+                        <div className="p-6 md:p-8 space-y-4 border-b border-[#e6d8c8] bg-white/70">
+                            <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-start space-x-3.5">
+                                    <div className="p-3 rounded-2xl bg-[#d59e66]/15 text-[#9a5820] border border-[#d59e66]/30 shrink-0 mt-0.5">
+                                        <Sparkles className="w-6 h-6 text-[#9a5820] animate-pulse" />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <span className="text-xs font-mono text-[#9a5820] font-bold tracking-wide uppercase">
+                                            AI Exit Interview Assistant
+                                        </span>
+                                        <h2 className="text-lg md:text-2xl font-serif font-bold text-stone-900 leading-snug">
+                                            {currentQuestion.question}
+                                        </h2>
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={() => speakText(currentQuestion.question)}
+                                    className="p-2.5 rounded-xl bg-[#f3eae0] hover:bg-[#eae0d4] text-stone-700 border border-[#d8c8b6] hover:border-[#b97a3f] transition-all shrink-0 cursor-pointer shadow-xs"
+                                    title="Repeat AI Question Audio"
+                                >
+                                    <Volume2 className={`w-4 h-4 ${isSpeaking ? 'text-[#9a5820] animate-bounce' : ''}`} />
+                                </button>
+                            </div>
+
+                            {currentQuestion.promptHint && (
+                                <p className="text-xs font-mono text-stone-600 bg-[#f7efe5] p-3 rounded-xl border border-[#dfd0be]">
+                                    💡 Hint / Format: <span className="text-[#9a5820] font-semibold">{currentQuestion.promptHint}</span>
+                                </p>
+                            )}
+                        </div>
+
+                        {/* 3. Interactive Response Body */}
+                        <div className="p-6 md:p-8 space-y-6 flex-1">
+                            {/* Choice Questions */}
+                            {currentQuestion.type === 'choice' && (
+                                <div className="space-y-3">
+                                    <label className="text-xs font-mono text-stone-600 font-semibold">Select option or speak your response:</label>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {currentQuestion.options.map((opt) => (
                                             <button
-                                                key={candidate}
-                                                onClick={() => {
-                                                    setLiveTranscript(candidate);
-                                                    setTranscriptAccumulated(candidate);
-                                                }}
-                                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${liveTranscript === candidate
-                                                    ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md scale-105'
-                                                    : 'bg-slate-900 text-slate-200 border-slate-700 hover:border-indigo-400 hover:bg-indigo-900/60'
-                                                    }`}
+                                                key={opt}
+                                                onClick={() => handleSelectOption(opt)}
+                                                className={`p-4 rounded-2xl text-left text-xs font-semibold transition-all border cursor-pointer ${
+                                                    liveTranscript === opt
+                                                        ? 'bg-gradient-to-r from-[#d59e66] to-[#c28346] text-white font-bold border-[#b97a3f] shadow-md shadow-[#d59e66]/20 scale-[1.01]'
+                                                        : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5]'
+                                                }`}
                                             >
-                                                {candidate}
+                                                {opt}
                                             </button>
                                         ))}
                                     </div>
                                 </div>
                             )}
-                        </div>
 
-                        {/* Real-time Voice Recording Button */}
-                        <div className="flex flex-col items-center justify-center space-y-3 pt-2">
-                            <button
-                                onClick={toggleListening}
-                                className={`flex items-center space-x-3 px-8 py-4 rounded-2xl font-bold text-sm transition-all shadow-xl ${isListening
-                                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30 animate-pulse'
-                                    : 'bg-gradient-to-r from-indigo-600 to-amber-500 hover:from-indigo-500 hover:to-amber-400 text-white shadow-indigo-600/30 transform hover:scale-105'
-                                    }`}
-                            >
-                                {isListening ? (
-                                    <>
-                                        <MicOff className="w-5 h-5" />
-                                        <span>Stop Recording Voice</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Mic className="w-5 h-5" />
-                                        <span>Start Voice Response</span>
-                                    </>
-                                )}
-                            </button>
-
-                            {/* Live Laptop Microphone Signal Meter */}
-                            {isListening ? (
-                                <div className="w-full max-w-xs space-y-1.5 pt-1 text-center">
-                                    <div className="flex items-center justify-between text-[11px] font-mono px-1">
-                                        <span className="text-slate-400 flex items-center gap-1">
-                                            <span className="relative flex h-2 w-2">
-                                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                                            </span>
-                                            Laptop Mic Signal:
-                                        </span>
-                                        <span className={`font-bold ${micVolume > 15 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                            {micVolume}% {micVolume > 15 ? '✓ Good' : '⚠️ Speak Louder'}
-                                        </span>
+                            {/* Rating Questions */}
+                            {currentQuestion.type === 'rating' && (
+                                <div className="space-y-4">
+                                    <label className="text-xs font-mono text-[#9a5820] font-semibold">👆 Tap your rating below:</label>
+                                    <div className="grid grid-cols-5 gap-3">
+                                        {[1, 2, 3, 4, 5].map((val) => (
+                                            <button
+                                                key={val}
+                                                onClick={() => handleSelectOption(val.toString())}
+                                                className={`p-5 rounded-2xl text-center font-bold text-lg transition-all border cursor-pointer ${
+                                                    liveTranscript === val.toString()
+                                                        ? 'bg-gradient-to-r from-[#d59e66] to-[#c28346] text-white border-[#b97a3f] shadow-md scale-105'
+                                                        : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5] hover:scale-105'
+                                                }`}
+                                            >
+                                                {val}
+                                            </button>
+                                        ))}
                                     </div>
-                                    <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-slate-800 flex">
-                                        <div
-                                            className="h-full bg-gradient-to-r from-amber-500 via-indigo-500 to-emerald-400 transition-all duration-75"
-                                            style={{ width: `${Math.max(6, micVolume)}%` }}
-                                        />
+                                    <div className="flex items-center justify-between text-[11px] font-mono text-stone-500 px-1">
+                                        <span>1 = Poor</span>
+                                        <span>5 = Excellent</span>
                                     </div>
-                                    <p className="text-[10px] font-mono text-slate-400 italic">
-                                        💡 Tip: Face your laptop screen & speak clearly into your built-in mic.
-                                    </p>
+                                    {liveTranscript && (
+                                        <div className="p-3 rounded-xl bg-[#f3eae0] border border-[#d59e66]/40 text-center">
+                                            <span className="text-sm font-bold text-[#9a5820]">Selected Rating: {liveTranscript}</span>
+                                        </div>
+                                    )}
                                 </div>
-                            ) : (
-                                <span className="text-[10px] font-mono text-slate-500">
-                                    Click to record or add to your voice answer.
-                                </span>
+                            )}
+
+                            {/* Middle Initial Selector Grid */}
+                            {currentQuestion.id === 'demo_middleinitial' && (
+                                <div className="space-y-3">
+                                    <label className="text-xs font-mono text-[#9a5820] font-semibold">👆 Tap your Middle Initial below:</label>
+                                    <div className="grid grid-cols-7 sm:grid-cols-10 gap-2">
+                                        {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'N/A'].map((letter) => {
+                                            const initialVal = letter === 'N/A' ? 'N/A' : letter + '.';
+                                            return (
+                                                <button
+                                                    key={letter}
+                                                    onClick={() => handleSelectOption(initialVal)}
+                                                    className={`p-3 rounded-xl font-bold text-sm transition-all border cursor-pointer ${
+                                                        liveTranscript === initialVal
+                                                            ? 'bg-[#d59e66] text-white border-[#b97a3f] shadow-sm scale-110'
+                                                            : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5] hover:scale-105'
+                                                    }`}
+                                                >
+                                                    {letter}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    {liveTranscript && (
+                                        <div className="p-3 rounded-xl bg-[#f3eae0] border border-[#d59e66]/40 text-center">
+                                            <span className="text-sm font-bold text-[#9a5820]">Selected: {liveTranscript}</span>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Voice Input Display Container (Standard text questions) */}
+                            {currentQuestion.type !== 'rating' && currentQuestion.id !== 'demo_middleinitial' && (
+                                <div className="space-y-4">
+                                    <div className="flex items-center justify-between border-b border-[#e6d8c8] pb-2">
+                                        <div className="flex items-center space-x-2">
+                                            <Mic className={`w-4 h-4 ${isListening ? 'text-rose-500 animate-ping' : 'text-[#d59e66]'}`} />
+                                            <h4 className="text-xs font-mono text-stone-700 font-semibold">
+                                                Transcribed Spoken Voice Response
+                                            </h4>
+                                        </div>
+
+                                        {liveTranscript && (
+                                            <button
+                                                onClick={() => {
+                                                    setLiveTranscript('');
+                                                    setTranscriptAccumulated('');
+                                                }}
+                                                className="text-[11px] font-mono text-rose-600 hover:text-rose-700 underline cursor-pointer"
+                                            >
+                                                Clear Audio Transcript
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Voice Display Speech Box (Editable Text Area) */}
+                                    <div className="space-y-3">
+                                        <textarea
+                                            value={liveTranscript}
+                                            onChange={(e) => {
+                                                setLiveTranscript(e.target.value);
+                                                setTranscriptAccumulated(e.target.value);
+                                            }}
+                                            placeholder="Press the microphone button below to speak, or click here to type/edit your answer..."
+                                            rows={currentQuestion.id === 'demo_firstname' || currentQuestion.id === 'demo_lastname' ? 2 : 3}
+                                            className="w-full p-4 rounded-2xl bg-white border border-[#d8c8b6] text-base font-sans text-stone-900 leading-relaxed text-center font-medium focus:outline-none focus:border-[#d59e66] focus:ring-2 focus:ring-[#d59e66]/25 transition-all resize-none shadow-inner placeholder:text-stone-400"
+                                        />
+
+                                        {/* Name Spelling Suggestion Chips */}
+                                        {getNameSpellingSuggestions(liveTranscript).length > 0 && (
+                                            <div className="p-3.5 rounded-2xl bg-[#f7efe5] border border-[#dfd0be] space-y-2 text-center">
+                                                <span className="text-xs font-mono text-[#9a5820] font-semibold block">
+                                                    ✨ Spelling Suggestions (Tap to select your exact name):
+                                                </span>
+                                                <div className="flex flex-wrap items-center justify-center gap-2">
+                                                    {getNameSpellingSuggestions(liveTranscript).map((candidate) => (
+                                                        <button
+                                                            key={candidate}
+                                                            onClick={() => {
+                                                                setLiveTranscript(candidate);
+                                                                setTranscriptAccumulated(candidate);
+                                                            }}
+                                                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                                                                liveTranscript === candidate
+                                                                    ? 'bg-[#d59e66] text-white border-[#b97a3f] shadow-sm scale-105'
+                                                                    : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#b97a3f] hover:bg-[#d59e66] hover:text-white'
+                                                            }`}
+                                                        >
+                                                            {candidate}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Real-time Voice Recording Button */}
+                                    <div className="flex flex-col items-center justify-center space-y-3 pt-1">
+                                        <button
+                                            onClick={toggleListening}
+                                            className={`flex items-center space-x-3 px-8 py-4 rounded-2xl font-extrabold text-sm transition-all shadow-md cursor-pointer ${
+                                                isListening
+                                                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/25 animate-pulse'
+                                                    : 'bg-gradient-to-r from-[#d59e66] to-[#c28346] hover:from-[#c88f55] hover:to-[#b47437] text-white shadow-[#c28346]/25 transform hover:scale-[1.02]'
+                                            }`}
+                                        >
+                                            {isListening ? (
+                                                <>
+                                                    <MicOff className="w-5 h-5" />
+                                                    <span>Stop Recording Voice</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Mic className="w-5 h-5 text-white" />
+                                                    <span>Start Voice Response</span>
+                                                </>
+                                            )}
+                                        </button>
+
+                                        {/* Whisper Large-v3-Turbo Transcribing Indicator */}
+                                        {isTranscribingWithWhisper && (
+                                            <div className="flex items-center justify-center space-x-2 py-2 px-4 rounded-xl bg-[#d59e66]/15 border border-[#d59e66]/35 text-xs font-mono text-[#8c521f] animate-pulse">
+                                                <Sparkles className="w-4 h-4 animate-spin text-[#8c521f]" />
+                                                <span>⚡ Whisper Large-v3-Turbo Transcribing Audio...</span>
+                                            </div>
+                                        )}
+
+                                        {/* Live Laptop Microphone Signal Meter */}
+                                        {isListening ? (
+                                            <div className="w-full max-w-xs space-y-1.5 pt-1 text-center">
+                                                <div className="flex items-center justify-between text-[11px] font-mono px-1">
+                                                    <span className="text-stone-600 flex items-center gap-1">
+                                                        <span className="relative flex h-2 w-2">
+                                                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
+                                                            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
+                                                        </span>
+                                                        Mic Signal:
+                                                    </span>
+                                                    <span className={`font-bold ${micVolume > 8 ? 'text-emerald-700' : 'text-[#9a5820]'}`}>
+                                                        {micVolume}% {micVolume > 8 ? '✓ Receiving Voice' : '⚠️ Speak into Mic'}
+                                                    </span>
+                                                </div>
+                                                <div className="h-2.5 w-full bg-[#e6d8c8] rounded-full overflow-hidden border border-[#d8c8b6] flex">
+                                                    <div
+                                                        className="h-full bg-gradient-to-r from-[#d59e66] to-emerald-600 transition-all duration-75"
+                                                        style={{ width: `${Math.max(6, micVolume)}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <span className="text-[11px] font-mono text-stone-500">
+                                                Click to record or add to your voice answer.
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {/* Real-time Sentiment Gauge */}
+                                    {liveTranscript.length > 5 && (
+                                        <div className="p-3 rounded-xl bg-[#f7efe5] border border-[#dfd0be] flex items-center justify-between text-xs font-mono">
+                                            <span className="text-stone-600">Live Voice Sentiment AI:</span>
+                                            <span className={`font-bold ${
+                                                currentSentiment.label === 'Positive' ? 'text-emerald-700' : currentSentiment.label === 'Negative' ? 'text-rose-600' : 'text-[#9a5820]'
+                                            }`}>
+                                                {currentSentiment.label} Polarity ({Math.round(currentSentiment.score * 100)}%)
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
 
-                        {/* Real-time Sentiment Gauge */}
-                        {liveTranscript.length > 5 && (
-                            <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs font-mono">
-                                <span className="text-slate-400">Live Voice Sentiment AI:</span>
-                                <span className={`font-bold ${currentSentiment.label === 'Positive' ? 'text-emerald-400' : currentSentiment.label === 'Negative' ? 'text-rose-400' : 'text-amber-400'
-                                    }`}>
-                                    {currentSentiment.label} Polarity ({Math.round(currentSentiment.score * 100)}%)
-                                </span>
-                            </div>
-                        )}
+                        {/* 4. Unified Navigation Footer inside the card */}
+                        <div className="px-6 py-4 bg-[#f3eae0] border-t border-[#e2d4c4] flex items-center justify-between">
+                            <button
+                                onClick={handlePrev}
+                                disabled={currentQIndex === 0}
+                                className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                                    currentQIndex === 0 
+                                        ? 'opacity-0 cursor-default' 
+                                        : 'bg-white hover:bg-[#eae0d4] text-stone-700 border border-[#d8c8b6] cursor-pointer shadow-xs'
+                                }`}
+                            >
+                                <ArrowLeft className="w-4 h-4" />
+                                <span>Previous Question</span>
+                            </button>
+
+                            <button
+                                onClick={handleSaveAndNext}
+                                disabled={isRefining}
+                                className={`flex items-center space-x-2 px-7 py-3 rounded-xl text-white text-xs font-extrabold shadow-md transition-all transform hover:scale-[1.02] cursor-pointer ${
+                                    isRefining
+                                        ? 'bg-[#c28346] animate-pulse cursor-wait shadow-[#c28346]/30'
+                                        : 'bg-gradient-to-r from-[#d59e66] to-[#c28346] hover:from-[#c88f55] hover:to-[#b47437] shadow-[#c28346]/20'
+                                }`}
+                            >
+                                {isRefining ? (
+                                    <>
+                                        <Sparkles className="w-4 h-4 animate-spin text-white" />
+                                        <span>✨ AI Refining Transcript...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>{currentQIndex === allQuestions.length - 1 ? 'Complete Exit Interview' : 'Save & Next Question'}</span>
+                                        <ArrowRight className="w-4 h-4" />
+                                    </>
+                                )}
+                            </button>
+                        </div>
                     </div>
-                )}
-
-                {/* Navigation Control Buttons */}
-                <div className="flex items-center justify-between pt-4">
-                    <button
-                        onClick={handlePrev}
-                        disabled={currentQIndex === 0}
-                        className={`flex items-center space-x-2 px-5 py-3 rounded-2xl text-xs font-bold transition-all ${currentQIndex === 0 ? 'opacity-0 cursor-default' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-                            }`}
-                    >
-                        <ArrowLeft className="w-4 h-4" />
-                        <span>Previous Question</span>
-                    </button>
-
-                    <button
-                        onClick={handleSaveAndNext}
-                        disabled={isRefining}
-                        className={`flex items-center space-x-2 px-7 py-3 rounded-2xl text-white text-xs font-extrabold shadow-lg transition-all transform hover:scale-105 ${isRefining
-                            ? 'bg-amber-600 animate-pulse cursor-wait shadow-amber-600/30'
-                            : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-600/30'
-                            }`}
-                    >
-                        {isRefining ? (
-                            <>
-                                <Sparkles className="w-4 h-4 animate-spin text-amber-300" />
-                                <span>✨ AI Refining Transcript...</span>
-                            </>
-                        ) : (
-                            <>
-                                <span>{currentQIndex === allQuestions.length - 1 ? 'Complete Exit Interview' : 'Save & Next Question'}</span>
-                                <ArrowRight className="w-4 h-4" />
-                            </>
-                        )}
-                    </button>
-                </div>
+                </main>
             </div>
         );
     }
@@ -828,48 +1034,94 @@ export default function VoiceInterview({ onInterviewComplete }) {
     // RENDER STAGE 4: INTERVIEW COMPLETE SUMMARY CERTIFICATE
     // --------------------------------------------------------------------------
     return (
-        <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-            <div className="glass-panel rounded-3xl p-8 md:p-12 border border-emerald-500/30 text-center space-y-6">
-                <div className="w-16 h-16 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto">
-                    <CheckCircle2 className="w-8 h-8" />
-                </div>
+        <div className="min-h-screen flex flex-col bg-cloud-gradient text-slate-800 relative selection:bg-orange-500 selection:text-white overflow-x-hidden">
+            {/* Top Navigation Bar with CCS Logo */}
+            <header className="relative z-20 w-full bg-[#d59e66] shadow-md border-b border-[#c28a52]/40">
+                <div className="w-full px-4 sm:px-6 py-2 flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                        <img 
+                            src={ccsLogo} 
+                            alt="College of Computer Studies Logo" 
+                            style={{ width: '60px', height: '60px' }}
+                            className="w-[60px] h-[60px] object-contain drop-shadow-sm shrink-0"
+                        />
+                        <div>
+                            <p className="text-sm sm:text-base font-serif font-bold text-slate-900 leading-tight">
+                                College of Computer Studies
+                            </p>
+                            <p className="text-[11px] sm:text-xs font-mono text-slate-800/80 tracking-tight">
+                                Laguna State Polytechnic University
+                            </p>
+                        </div>
+                    </div>
 
-                <div className="space-y-2">
-                    <h2 className="text-3xl font-extrabold text-white">Exit Interview Successfully Completed!</h2>
-                    <p className="text-slate-300 text-sm max-w-xl mx-auto">
-                        Thank you for participating in the VAlumni Voice Exit Interview. Your voice responses have been securely stored in the LSPU Alumni Database pursuant to RA 10173.
-                    </p>
+                    {onExitToLanding && (
+                        <button
+                            onClick={() => {
+                                sessionStorage.removeItem('valumni_current_qindex');
+                                sessionStorage.removeItem('valumni_interview_responses');
+                                sessionStorage.setItem('valumni_active_view', 'landing');
+                                onExitToLanding();
+                            }}
+                            className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-rose-700 text-white font-mono text-xs font-bold shadow-sm transition-all cursor-pointer flex items-center space-x-1"
+                            title="Return to Home"
+                        >
+                            <span>✕ Return to Home</span>
+                        </button>
+                    )}
                 </div>
+            </header>
 
-                {/* Responses Summary Table */}
-                <div className="p-6 rounded-2xl bg-slate-950 border border-slate-800 text-left space-y-4 max-h-96 overflow-y-auto">
-                    <h3 className="font-mono text-xs text-indigo-400 font-bold uppercase">Transcribed Exit Interview Log</h3>
-                    <div className="divide-y divide-slate-800/80 space-y-3">
-                        {allQuestions.map(q => (
-                            <div key={q.id} className="pt-3 space-y-1">
-                                <p className="text-xs font-semibold text-slate-300">{q.question}</p>
-                                <p className="text-xs text-amber-300 font-mono italic">
-                                    "{responses[q.id] || 'No verbal response recorded'}"
-                                </p>
-                            </div>
-                        ))}
+            <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-8 max-w-4xl mx-auto w-full">
+                <div className="w-full rounded-3xl p-8 md:p-12 border border-[#d8c8b6] bg-[#fbf7f0]/95 text-center space-y-6 shadow-xl text-stone-800">
+                    <div className="w-16 h-16 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 flex items-center justify-center mx-auto">
+                        <CheckCircle2 className="w-8 h-8" />
+                    </div>
+
+                    <div className="space-y-2">
+                        <h2 className="text-3xl font-serif font-extrabold text-stone-900">Exit Interview Successfully Completed!</h2>
+                        <p className="text-stone-600 text-sm max-w-xl mx-auto">
+                            Thank you for participating in the VAlumni Voice Exit Interview. Your voice responses have been securely stored in the LSPU Alumni Database pursuant to RA 10173.
+                        </p>
+                    </div>
+
+                    {/* Responses Summary Table */}
+                    <div className="p-6 rounded-2xl bg-white border border-[#d8c8b6] text-left space-y-4 max-h-96 overflow-y-auto">
+                        <h3 className="font-mono text-xs text-[#9a5820] font-bold uppercase">Transcribed Exit Interview Log</h3>
+                        <div className="divide-y divide-[#e8dccf] space-y-3">
+                            {allQuestions.map(q => (
+                                <div key={q.id} className="pt-3 space-y-1">
+                                    <p className="text-xs font-semibold text-stone-800">{q.question}</p>
+                                    <p className="text-xs text-[#9a5820] font-mono italic">
+                                        "{responses[q.id] || 'No verbal response recorded'}"
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="pt-4 flex justify-center">
+                        <button
+                            onClick={() => {
+                                sessionStorage.removeItem('valumni_current_qindex');
+                                sessionStorage.removeItem('valumni_interview_responses');
+                                sessionStorage.setItem('valumni_active_view', 'landing');
+                                if (onExitToLanding) {
+                                    onExitToLanding();
+                                } else {
+                                    setFlowStage('landing');
+                                    setCurrentQIndex(0);
+                                    setResponses({});
+                                    setLiveTranscript('');
+                                }
+                            }}
+                            className="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-[#d59e66] to-[#c28346] hover:from-[#c88f55] hover:to-[#b47437] text-white font-extrabold text-sm shadow-md shadow-[#c28346]/25 transition-all cursor-pointer"
+                        >
+                            Finish & Return to Home
+                        </button>
                     </div>
                 </div>
-
-                <div className="pt-4 flex justify-center">
-                    <button
-                        onClick={() => {
-                            setFlowStage('landing');
-                            setCurrentQIndex(0);
-                            setResponses({});
-                            setLiveTranscript('');
-                        }}
-                        className="px-8 py-3.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs"
-                    >
-                        Complete Interview Session
-                    </button>
-                </div>
-            </div>
+            </main>
         </div>
     );
 }

@@ -105,6 +105,8 @@ const FILIPINO_PHONETIC_MAP = [
     { pattern: /\b(mark\s+anthony|marc\s+anthony)\b/gi, replacement: "Mark Anthony" },
 
     // Surname Phonetic Corrections
+    { pattern: /\b(koronasyon|coronasyon|coronasion|coronacion|corona\s+cion|corona\s+shon|coronation)\b/gi, replacement: "Coronacion" },
+    { pattern: /\b(urea|orea|oria|uria|urhea|u\s+rea|you\s+rea|urrea|ur-rea)\b/gi, replacement: "Urrea" },
     { pattern: /\b(cornelia|cornilla|ornelia|ornilla|cornella|cornellya|hor\s+nilla|or\s+neeya)\b/gi, replacement: "Hornilla" },
     { pattern: /\b(day\s+la\s+cruise|day\s+la\s+cruz|de\s+la\s+cruz|dela\s+cruz|dela\s+cruise)\b/gi, replacement: "Dela Cruz" },
     { pattern: /\b(de\s+los\s+santos|delos\s+santos|day\s+los\s+santos)\b/gi, replacement: "De Los Santos" },
@@ -121,6 +123,7 @@ const FILIPINO_PHONETIC_MAP = [
 ];
 
 const COMMON_FILIPINO_SURNAMES = [
+    "Coronacion", "Urrea", "Carait", "Alipon", "Eleazar", "Reventar", "Alimagno",
     "Dela Cruz", "Santos", "Reyes", "Ramos", "Garcia", "Mendoza", "Gonzales", "Bautista",
     "Villanueva", "Castillo", "Torres", "Aquino", "Navarro", "Mercado", "Dimaculangan",
     "Catapang", "Agoncillo", "Macaraig", "Hornilla", "Quemada", "Tolentino", "Salazar",
@@ -200,7 +203,13 @@ export function getNameSpellingSuggestions(rawText) {
     const text = rawText.trim().toLowerCase();
     const suggestions = [];
 
-    // 1. Check known phonetic pairs
+    // 1. Check known phonetic pairs (including Coronacion and Urrea)
+    if (/\b(koronasyon|coronacion|coronasion|coronation|corona)\b/i.test(text)) {
+        suggestions.push("Coronacion");
+    }
+    if (/\b(urrea|urea|orea|oria|uria|urhea)\b/i.test(text)) {
+        suggestions.push("Urrea");
+    }
     if (/\b(riley|railey|rylee|raylee|ryley)\b/i.test(text)) {
         suggestions.push("Railey", "Riley", "Rylee", "Reilly");
     }
@@ -220,20 +229,36 @@ export function getNameSpellingSuggestions(rawText) {
         suggestions.push("Reyes", "Reyis");
     }
 
-    // 2. Search Philippine dataset for matching names (first names & surnames)
+    // 2. Search Philippine dataset for matching names (first names & surnames) using edit distance
     if (philippineNames) {
         const words = text.split(/\s+/);
         words.forEach(w => {
             if (w.length >= 3) {
-                // Match first names
-                if (philippineNames.firstNames) {
-                    const matchFn = philippineNames.firstNames.filter(fn => fn.toLowerCase().includes(w) || w.includes(fn.toLowerCase()));
-                    suggestions.push(...matchFn.slice(0, 3));
-                }
-                // Match surnames
+                // Match surnames with fuzzy edit distance or prefix match
                 if (philippineNames.surnames) {
-                    const matchSn = philippineNames.surnames.filter(sn => sn.toLowerCase().includes(w) || w.includes(sn.toLowerCase()));
-                    suggestions.push(...matchSn.slice(0, 3));
+                    const matchSn = philippineNames.surnames.filter(sn => {
+                        const sLower = sn.toLowerCase();
+                        if (sLower === w) return true;
+                        if (sLower.startsWith(w) || (w.length >= 5 && w.startsWith(sLower) && sLower.length >= 4)) return true;
+                        if (w.length >= 4 && Math.abs(sLower.length - w.length) <= 2) {
+                            return calculateWER(sLower, w).editDistance <= 2;
+                        }
+                        return false;
+                    });
+                    suggestions.push(...matchSn.slice(0, 4));
+                }
+                // Match first names with fuzzy edit distance or prefix match
+                if (philippineNames.firstNames) {
+                    const matchFn = philippineNames.firstNames.filter(fn => {
+                        const fLower = fn.toLowerCase();
+                        if (fLower === w) return true;
+                        if (fLower.startsWith(w) || (w.length >= 5 && w.startsWith(fLower) && fLower.length >= 4)) return true;
+                        if (w.length >= 4 && Math.abs(fLower.length - w.length) <= 2) {
+                            return calculateWER(fLower, w).editDistance <= 2;
+                        }
+                        return false;
+                    });
+                    suggestions.push(...matchFn.slice(0, 3));
                 }
             }
         });
@@ -295,7 +320,7 @@ export const LSPU_SURVEY_STRUCTURE = [
                 id: "demo_lastname",
                 type: "voice_text",
                 question: "Please state your Last Name (Family Name / Surname).",
-                promptHint: "e.g., Dela Cruz, Santos, Catapang"
+                promptHint: "e.g., Coronacion, Urrea, Dela Cruz, Santos"
             },
             {
                 id: "demo_firstname",
@@ -486,7 +511,7 @@ export const LSPU_SURVEY_STRUCTURE = [
     }
 ];
 
-export const DATA_PRIVACY_TEXT = `Privacy notice in compliance with RA 10173 Data Privacy Act of 2012. By voluntarily accomplishing this form, you consent to the collection, storage, and processing of your personal, academic, and evaluation responses by the researchers responsible for this research survey. This information will be used solely for the development, academic evaluation, and software quality testing of the VAlumni: Alumni Office System Integrated AI Voice Assistant for Exit Interviews platform. Your responses will be processed pursuant to the legitimate academic and institutional research functions of LSPU, will remain strictly confidential, and will only be accessible to the project researchers and authorized Alumni Office personnel. To ensure data security, all personal identifying parameters are separated from the analytical database, and strict anonymization protocols are applied before any thematic or sentiment analysis is performed. The Participant is assured that the researchers shall, pursuant to prevailing privacy laws, uphold your rights as a data subject, implement appropriate technical and organizational security measures to protect your data, and remain strictly adherent to the general data privacy principles of transparency, legitimate purpose, and proportionality in processing your information.
+export const DATA_PRIVACY_TEXT = `Privacy notice in compliance with RA 10173 Data Privacy Act of 2012. By voluntarily starting an interview session, you consent to the collection, storage, and processing of your personal, academic, and evaluation responses by the organization responsible for this interview. This information will be used solely for academic evaluation. Your responses will be processed pursuant to the legitimate academic and institutional research functions of LSPU, will remain strictly confidential, and will only be accessible to authorized Guidance and Alumni Office personnel. To ensure data security, all personal identifying parameters are separated from the analytical database, and strict anonymization protocols are applied before any thematic or sentiment analysis is performed. The student is assured that the organization shall, pursuant to prevailing privacy laws, uphold your rights as a data subject, implement appropriate technical and organizational security measures to protect your data, and remain strictly adherent to the general data privacy principles of transparency, legitimate purpose, and proportionality in processing your information.
 
 Best regards, Office of the Alumni Affairs, LSPU.`;
 
@@ -567,8 +592,8 @@ export async function refineTranscriptWithGemini(rawTranscript, questionObj, cus
     } else if (id === 'demo_firstname' || id === 'demo_lastname') {
         const sampleContext = id === 'demo_firstname'
             ? (philippineNames?.firstNames ? philippineNames.firstNames.slice(0, 50).join(', ') : 'Maria, Juan, Railey, Bryan, Mark')
-            : (philippineNames?.surnames ? philippineNames.surnames.slice(0, 50).join(', ') : 'Dela Cruz, Santos, Reyes, Hornilla, Dimaculangan');
-        systemInstruction = `The user stated their name. Correct any speech recognition phonetic misrecognitions using Philippine name conventions (e.g. ${sampleContext}). Return proper capitalized Name format only, with no surrounding punctuation or quotes.`;
+            : 'Coronacion, Urrea, Dela Cruz, Santos, Reyes, Hornilla, Dimaculangan, Catapang, Quemada, Ramos, Mendoza, Peñaranda';
+        systemInstruction = `The user stated their ${id === 'demo_firstname' ? 'First Name' : 'Last Name (Surname)'} in the Philippines. Correct any speech recognition phonetic or Tagalog spelling misrecognitions (e.g. "Koronasyon" -> "Coronacion", "Urea" or "Orea" -> "Urrea", "Dela Cruise" -> "Dela Cruz", "Cornelia" -> "Hornilla"). Known local surnames include: ${sampleContext}. Return proper capitalized Name format only, with no surrounding punctuation or quotes.`;
     } else {
         systemInstruction = "Clean up this spoken transcript from a survey. Remove speech stutters (um, ah, like), correct technical computing terminology (e.g., Python, SQL, React, Docker, AWS), and return a clear, grammatically corrected answer. Preserve the user's exact meaning.";
     }

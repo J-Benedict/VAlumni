@@ -4,7 +4,8 @@
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100 font-sans overflow-x-hidden;
+    @apply font-sans antialiased text-slate-800 selection:bg-orange-500 selection:text-white;
+    min-height: 100vh;
   }
 }
 
@@ -15,31 +16,80 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(254, 215, 170, 0.25);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(51, 65, 85, 0.8);
-  border-radius: 4px;
+  background: rgba(234, 88, 12, 0.4);
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(71, 85, 105, 1);
+  background: rgba(234, 88, 12, 0.7);
 }
 
-/* Glassmorphism utility classes */
+/* Cloud-like Soft Sunset Ambient Background */
+.bg-cloud-gradient {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFFDF9 20%, #FFF7EE 45%, #FDEEDC 70%, #F8DEC0 90%, #F5D3AC 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+  position: relative;
+}
+
+/* Atmospheric Cloud Blobs */
+.cloud-ambient {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.45;
+}
+
+/* Sleek Modern Panels */
+.sunset-panel {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 20px 40px -15px rgba(234, 88, 12, 0.12), 0 0 1px 1px rgba(255, 255, 255, 0.7);
+}
+
+.sunset-panel-dark {
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(251, 146, 60, 0.2);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.35);
+}
+
+.sunset-card {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(253, 186, 116, 0.35);
+  box-shadow: 0 10px 25px -5px rgba(234, 88, 12, 0.08);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sunset-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(249, 115, 22, 0.5);
+  box-shadow: 0 15px 30px -5px rgba(234, 88, 12, 0.15);
+}
+
+/* Retain backwards-compatible glass utilities */
 .glass-panel {
-  background: rgba(15, 23, 42, 0.75);
+  background: rgba(15, 23, 42, 0.78);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .glass-card {
-  background: rgba(30, 41, 59, 0.6);
+  background: rgba(30, 41, 59, 0.65);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .glass-card-hover {
@@ -48,19 +98,8 @@
 
 .glass-card-hover:hover {
   background: rgba(30, 41, 59, 0.85);
-  border-color: rgba(99, 102, 241, 0.4);
+  border-color: rgba(249, 115, 22, 0.4);
   transform: translateY(-2px);
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
 }
 
-.glow-purple {
-  box-shadow: 0 0 20px rgba(139, 92, 246, 0.25);
-}
-
-.glow-blue {
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.25);
-}
-
-.glow-emerald {
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.25);
-}

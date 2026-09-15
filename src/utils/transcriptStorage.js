@@ -3,6 +3,8 @@
  * Integrates PostgreSQL API Backend (/api/transcripts) with local fallback.
  */
 
+import { parseLSPUDataset } from './datasetLoader';
+
 const STORAGE_KEY = 'valumni_interview_transcripts';
 
 /**
@@ -194,9 +196,18 @@ function saveInterviewTranscriptLocal(record) {
 function getInterviewTranscriptsLocal() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
-        return raw ? JSON.parse(raw) : [];
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                return parsed;
+            }
+        }
+        // Fallback seed with baseline LSPU exit interview records
+        const initial = parseLSPUDataset();
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(initial)); } catch (e) { }
+        return initial;
     } catch (e) {
-        return [];
+        return parseLSPUDataset();
     }
 }
 

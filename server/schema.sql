@@ -54,3 +54,20 @@ CREATE TABLE IF NOT EXISTS interview_transcripts (
 CREATE INDEX IF NOT EXISTS idx_transcripts_student_id ON interview_transcripts(student_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_program ON interview_transcripts(program);
 CREATE INDEX IF NOT EXISTS idx_transcripts_timestamp ON interview_transcripts(timestamp DESC);
+
+-- 3. Create Admin Users Table
+CREATE TABLE IF NOT EXISTS admin_users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for admin username lookup
+CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username);
+
+-- Example Query: Manually insert or update an admin account
+-- INSERT INTO admin_users (username, password) 
+-- VALUES ('admin', 'admin123')
+-- ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password;
+

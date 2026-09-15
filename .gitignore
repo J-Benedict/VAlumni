@@ -11,3 +11,10 @@ dist/
 dist-ssr/
 *.local
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
