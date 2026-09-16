@@ -153,7 +153,10 @@ export function getInterviewTranscripts() {
 export async function deleteInterviewTranscriptFromDB(id) {
     deleteInterviewTranscriptLocal(id);
     try {
-        await fetch(`/api/transcripts/${id}`, { method: 'DELETE' });
+        const res = await fetch(`/api/transcripts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        if (!res.ok) {
+            console.error('PostgreSQL API delete returned status:', res.status);
+        }
     } catch (e) {
         console.warn('PostgreSQL API delete error:', e);
     }

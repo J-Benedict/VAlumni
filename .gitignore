@@ -18,3 +18,7 @@ __pycache__/
 *$py.class
 .venv/
 env/
+pyrefly.toml
+
+# Editor & IDE
+.vscode/

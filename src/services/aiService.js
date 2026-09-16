@@ -173,15 +173,23 @@ const WORD_TO_DIGIT_MAP = {
     'eight': '8', 'ate': '8',
     'nine': '9', 'nigh': '9',
     'ten': '10',
-    'dash': '-', 'hyphen': '-', 'minus': '-'
+    'dash': '-', 'hyphen': '-', 'minus': '-',
+    'excellent': '5',
+    'very good': '4',
+    'very satisfactory': '4',
+    'satisfactory': '3',
+    'average': '3',
+    'neutral': '3',
+    'fair': '2',
+    'poor': '1'
 };
 
-export function convertWordsToDigits(rawText) {
+export function convertWordsToDigits(rawText, isRating = false) {
     if (!rawText || typeof rawText !== 'string') return '';
 
     let text = rawText.toLowerCase().trim();
 
-    // 1. Replace word numbers with digits
+    // 1. Replace word numbers and rating words with digits
     Object.keys(WORD_TO_DIGIT_MAP).forEach(word => {
         const regex = new RegExp(`\\b${word}\\b`, 'gi');
         text = text.replace(regex, WORD_TO_DIGIT_MAP[word]);
@@ -189,6 +197,13 @@ export function convertWordsToDigits(rawText) {
 
     // 2. Extract digits and dashes
     let cleanedDigits = text.replace(/\s+/g, '').replace(/[^0-9-]/g, '');
+
+    if (isRating) {
+        // If rating question, extract the single rating score (1-5)
+        const match = cleanedDigits.match(/[1-5]/);
+        if (match) return match[0];
+        return cleanedDigits ? cleanedDigits.slice(0, 1) : rawText.trim();
+    }
 
     // Format 8 digits into Student ID format e.g. "01220941" -> "0122-0941"
     if (/^\d{8}$/.test(cleanedDigits)) {
@@ -274,9 +289,22 @@ export function correctFilipinoName(rawText, fieldType = 'lastname') {
 
     if (fieldType === 'middleinitial') {
         const lower = cleaned.toLowerCase().trim();
+        if (/^(n\/?a|none|no\s+middle|wala|walang\s+middle)/i.test(lower)) {
+            return 'N/A';
+        }
         // Check phonetic word match (e.g. "em" -> "M.")
         if (LETTER_PHONETIC_MAP[lower]) {
             return LETTER_PHONETIC_MAP[lower] + '.';
+        }
+        // Check if phrased like "letter M" or "initial is M"
+        const letterMatch = lower.match(/(?:letter|initial(?:\s+is)?)\s+([a-z])/i);
+        if (letterMatch) {
+            return letterMatch[1].toUpperCase() + '.';
+        }
+        // Check if standalone single letter anywhere in string
+        const singleLetter = lower.match(/\b([a-z])\b/i);
+        if (singleLetter) {
+            return singleLetter[1].toUpperCase() + '.';
         }
         // Extract first alphabetical character
         const firstLetter = cleaned.replace(/[^a-zA-Z]/g, '').charAt(0);
@@ -320,7 +348,7 @@ export const LSPU_SURVEY_STRUCTURE = [
                 id: "demo_lastname",
                 type: "voice_text",
                 question: "Please state your Last Name (Family Name / Surname).",
-                promptHint: "e.g., Coronacion, Urrea, Dela Cruz, Santos"
+                promptHint: "e.g., Bautista, Dela Cruz, Santos"
             },
             {
                 id: "demo_firstname",
@@ -331,7 +359,7 @@ export const LSPU_SURVEY_STRUCTURE = [
             {
                 id: "demo_middleinitial",
                 type: "voice_text",
-                question: "Please state your Middle Initial (or Middle Name).",
+                question: "Please state your Middle Initial.",
                 promptHint: "e.g., M. or A."
             },
             {
@@ -599,7 +627,7 @@ export async function refineTranscriptWithGemini(rawTranscript, questionObj, cus
     }
 
     try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -643,7 +671,7 @@ function applyClientSideRuleFallback(rawTranscript, activeQ) {
     else if (activeQ.id === 'demo_firstname') text = correctFilipinoName(text, 'firstname');
     else if (activeQ.id === 'demo_middleinitial') text = correctFilipinoName(text, 'middleinitial');
     else if (activeQ.id === 'demo_studentid' || activeQ.id === 'demo_grad_year' || activeQ.type === 'rating') {
-        text = convertWordsToDigits(text);
+        text = convertWordsToDigits(text, activeQ.type === 'rating');
     }
     return text;
 }

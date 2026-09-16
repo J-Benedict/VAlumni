@@ -379,7 +379,6 @@ export default function DatasetTable() {
                                                     {sectionQuestions.map((q) => (
                                                         <div key={q.id} className="space-y-1">
                                                             <p className="text-xs font-medium text-slate-300">
-                                                                <span className="text-indigo-400 font-mono text-[10px] mr-1 font-bold">[{q.id}]</span>
                                                                 {q.question}
                                                             </p>
                                                             <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs font-mono text-amber-200 italic">

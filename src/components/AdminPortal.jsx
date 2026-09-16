@@ -2,10 +2,10 @@ import React, { useState, useEffect, useMemo } from 'react';
 import ccsLogo from '../../assets/ccs_logo.png';
 import { getInterviewTranscriptsFromDB, deleteInterviewTranscriptFromDB, clearAllTranscriptsFromDB } from '../utils/transcriptStorage';
 import { LSPU_SURVEY_STRUCTURE, generateThematicSummaries } from '../services/aiService';
-import { 
-    Search, Download, Trash2, Eye, X, ArrowUpDown, Filter, Star, 
-    Calendar, Database, LogOut, BarChart3, ListFilter, Users, Smile, 
-    Award, Briefcase, TrendingUp, Sparkles, BookOpen, AlertTriangle, 
+import {
+    Search, Download, Trash2, Eye, X, ArrowUpDown, Filter, Star,
+    Calendar, Database, LogOut, BarChart3, ListFilter, Users, Smile,
+    Award, Briefcase, TrendingUp, Sparkles, BookOpen, AlertTriangle,
     CheckCircle2, FileText, ChevronRight, ShieldCheck
 } from 'lucide-react';
 import Papa from 'papaparse';
@@ -19,6 +19,8 @@ export default function AdminPortal({ adminUser, onLogout }) {
     const [sentimentFilter, setSentimentFilter] = useState('ALL');
     const [sortBy, setSortBy] = useState('NEWEST');
     const [selectedSession, setSelectedSession] = useState(null);
+    const [sessionToDelete, setSessionToDelete] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
     // Refresh transcripts from PostgreSQL DB
@@ -65,28 +67,33 @@ export default function AdminPortal({ adminUser, onLogout }) {
         });
     }, [transcripts, searchTerm, programFilter, sentimentFilter, sortBy]);
 
-    // Handle delete single transcript
-    const handleDeleteSession = async (session, e) => {
+    // Open delete confirmation modal for a session
+    const handleDeleteClick = (session, e) => {
         if (e) e.stopPropagation();
-        if (!window.confirm(`Are you sure you want to delete the interview session for "${session.name}"?`)) {
-            return;
-        }
-
-        await deleteInterviewTranscriptFromDB(session.id);
-        await loadTranscripts();
-        if (selectedSession && selectedSession.id === session.id) {
-            setSelectedSession(null);
-        }
+        setSessionToDelete(session);
     };
 
-    // Handle delete all transcripts
-    const handleClearAll = async () => {
-        if (!window.confirm("WARNING: Are you sure you want to delete ALL saved interview sessions from the database? This cannot be undone.")) {
-            return;
+    // Confirm and execute deletion from DB and local state
+    const confirmDeleteSession = async () => {
+        if (!sessionToDelete) return;
+        const targetId = sessionToDelete.id;
+        setIsDeleting(true);
+        try {
+            // Optimistically update UI
+            setTranscripts(prev => prev.filter(t => t.id !== targetId));
+            if (selectedSession && selectedSession.id === targetId) {
+                setSelectedSession(null);
+            }
+            // Delete from database and cache
+            await deleteInterviewTranscriptFromDB(targetId);
+            // Reload to sync with DB
+            await loadTranscripts();
+        } catch (err) {
+            console.error('Error during session deletion:', err);
+        } finally {
+            setIsDeleting(false);
+            setSessionToDelete(null);
         }
-        await clearAllTranscriptsFromDB();
-        await loadTranscripts();
-        setSelectedSession(null);
     };
 
     // CSV Export
@@ -125,7 +132,7 @@ export default function AdminPortal({ adminUser, onLogout }) {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', `VAlumni_CCS_Exit_Interviews_${new Date().toISOString().slice(0,10)}.csv`);
+        link.setAttribute('download', `VAlumni_CCS_Exit_Interviews_${new Date().toISOString().slice(0, 10)}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -142,7 +149,41 @@ export default function AdminPortal({ adminUser, onLogout }) {
         ? (transcripts.reduce((acc, curr) => acc + (curr.ratings?.overallAvg || 0), 0) / totalCount).toFixed(2)
         : '0.00';
 
-    const employedCount = transcripts.filter(t => (t.employmentStatus || '').toLowerCase().includes('employed') || (t.employmentStatus || '').toLowerCase().includes('offer')).length;
+    // Accurate check for employment status (prevents 'unemployed' matching substring 'employed')
+    const isEmployed = (status) => {
+        if (!status || typeof status !== 'string') return false;
+        const lower = status.toLowerCase().trim();
+        if (
+            lower.includes('unemployed') ||
+            lower.includes('not employed') ||
+            lower.includes('seeking') ||
+            lower.includes('looking') ||
+            lower.includes('homeless') ||
+            lower.includes('wala') ||
+            lower.includes('tambay') ||
+            lower.includes('none')
+        ) {
+            return false;
+        }
+        if (
+            lower.includes('freelanc') ||
+            lower.includes('contractor') ||
+            lower.includes('intern') ||
+            lower.includes('developer') ||
+            lower.includes('engineer') ||
+            lower.includes('analyst') ||
+            lower.includes('programmer') ||
+            lower.includes('job offer') ||
+            lower.includes('full-time') ||
+            lower.includes('part-time') ||
+            /\bemployed\b/.test(lower)
+        ) {
+            return true;
+        }
+        return false;
+    };
+
+    const employedCount = transcripts.filter(t => isEmployed(t.employmentStatus)).length;
     const employedPercent = totalCount > 0 ? Math.round((employedCount / totalCount) * 100) : 0;
 
     // Charts Data
@@ -177,11 +218,11 @@ export default function AdminPortal({ adminUser, onLogout }) {
                 <div className="w-full px-4 sm:px-6 py-2 flex items-center justify-between">
                     {/* Left: Brand */}
                     <div className="flex items-center space-x-3">
-                        <img 
-                            src={ccsLogo} 
-                            alt="CCS Logo" 
+                        <img
+                            src={ccsLogo}
+                            alt="CCS Logo"
                             style={{ width: '60px', height: '60px' }}
-                            className="w-[60px] h-[60px] object-contain drop-shadow-sm shrink-0" 
+                            className="w-[60px] h-[60px] object-contain drop-shadow-sm shrink-0"
                         />
                         <div>
                             <div className="flex items-center space-x-2">
@@ -271,11 +312,10 @@ export default function AdminPortal({ adminUser, onLogout }) {
                     <div className="flex items-center space-x-2">
                         <button
                             onClick={() => setActiveTab('sessions')}
-                            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-                                activeTab === 'sessions'
+                            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${activeTab === 'sessions'
                                     ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
                                     : 'bg-white/70 hover:bg-white text-slate-700 border border-slate-200'
-                            }`}
+                                }`}
                         >
                             <ListFilter className="w-4 h-4" />
                             <span>Saved Sessions & Transcripts ({transcripts.length})</span>
@@ -283,11 +323,10 @@ export default function AdminPortal({ adminUser, onLogout }) {
 
                         <button
                             onClick={() => setActiveTab('analytics')}
-                            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
-                                activeTab === 'analytics'
+                            className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${activeTab === 'analytics'
                                     ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
                                     : 'bg-white/70 hover:bg-white text-slate-700 border border-slate-200'
-                            }`}
+                                }`}
                         >
                             <BarChart3 className="w-4 h-4" />
                             <span>Summary & Sentiment Analytics</span>
@@ -303,17 +342,6 @@ export default function AdminPortal({ adminUser, onLogout }) {
                             <Download className="w-4 h-4" />
                             <span>Export CSV</span>
                         </button>
-
-                        {transcripts.length > 0 && (
-                            <button
-                                onClick={handleClearAll}
-                                className="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold transition-all cursor-pointer"
-                                title="Clear all saved transcripts"
-                            >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Clear DB</span>
-                            </button>
-                        )}
                     </div>
                 </div>
 
@@ -384,7 +412,7 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                     <thead className="bg-orange-50/80 text-slate-700 font-serif font-bold uppercase text-[11px] tracking-wider border-b border-orange-200">
                                         <tr>
                                             <th className="p-4">Alumni Name & ID</th>
-                                            <th className="p-4">Degree & Year</th>
+                                            <th className="p-4">Degree & Year of Graduation</th>
                                             <th className="p-4">Capstone Role</th>
                                             <th className="p-4">Overall Score</th>
                                             <th className="p-4">Employment</th>
@@ -399,7 +427,7 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                                     <Database className="w-10 h-10 text-orange-400 mx-auto opacity-70" />
                                                     <p className="font-bold font-serif text-slate-700 text-base">No interview sessions found</p>
                                                     <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                                                        {searchTerm 
+                                                        {searchTerm
                                                             ? "No records match your search criteria. Try clearing filters."
                                                             : "Complete an exit interview session from the landing page to save entries into PostgreSQL."}
                                                     </p>
@@ -409,13 +437,8 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                             filteredTranscripts.map((session) => (
                                                 <tr key={session.id} className="hover:bg-orange-50/50 transition-colors">
                                                     <td className="p-4">
-                                                        <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                                                        <div className="font-bold text-slate-900">
                                                             {session.name}
-                                                            {session.source === 'voice_interview' && (
-                                                                <span className="px-1.5 py-0.5 rounded text-[9px] bg-orange-100 text-orange-800 font-mono">
-                                                                    🎙️ Voice
-                                                                </span>
-                                                            )}
                                                         </div>
                                                         <div className="text-[11px] text-orange-700 font-mono font-medium">
                                                             {session.studentId}
@@ -432,13 +455,12 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                                         {session.employmentStatus || 'N/A'}
                                                     </td>
                                                     <td className="p-4">
-                                                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${
-                                                            session.sentiment?.label === 'Positive'
+                                                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${session.sentiment?.label === 'Positive'
                                                                 ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                                                                 : session.sentiment?.label === 'Negative'
                                                                     ? 'bg-rose-100 text-rose-800 border border-rose-200'
                                                                     : 'bg-amber-100 text-amber-800 border border-amber-200'
-                                                        }`}>
+                                                            }`}>
                                                             {session.sentiment?.label || 'Neutral'}
                                                         </span>
                                                     </td>
@@ -452,7 +474,8 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                                                 <Eye className="w-4 h-4" />
                                                             </button>
                                                             <button
-                                                                onClick={(e) => handleDeleteSession(session, e)}
+                                                                type="button"
+                                                                onClick={(e) => handleDeleteClick(session, e)}
                                                                 className="p-2 rounded-xl bg-slate-100 hover:bg-rose-600 text-slate-500 hover:text-white transition-all cursor-pointer"
                                                                 title="Delete Session From Database"
                                                             >
@@ -571,19 +594,14 @@ export default function AdminPortal({ adminUser, onLogout }) {
                 {/* INDIVIDUAL SESSION INSPECTOR MODAL */}
                 {selectedSession && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
-                        <div 
-                            className="relative w-full max-w-3xl rounded-3xl bg-white/95 backdrop-blur-xl p-6 md:p-8 border border-orange-200 shadow-2xl shadow-orange-950/20 text-slate-800 space-y-6 max-h-[90vh] overflow-y-auto"
+                        <div
+                            className="relative w-full max-w-3xl h-[88vh] max-h-[750px] rounded-3xl bg-white/95 backdrop-blur-xl p-6 md:p-8 border border-orange-200 shadow-2xl shadow-orange-950/20 text-slate-800 flex flex-col space-y-5 overflow-hidden"
                             onClick={(e) => e.stopPropagation()}
                         >
                             {/* Modal Header */}
-                            <div className="flex items-start justify-between border-b border-orange-100 pb-4">
+                            <div className="flex items-start justify-between border-b border-orange-100 pb-4 shrink-0">
                                 <div>
-                                    <div className="flex items-center space-x-2">
-                                        <h3 className="text-2xl font-serif font-bold text-slate-900">{selectedSession.name}</h3>
-                                        <span className="px-2 py-0.5 rounded text-xs bg-orange-100 text-orange-800 border border-orange-200 font-mono">
-                                            🎙️ Individual Session Log
-                                        </span>
-                                    </div>
+                                    <h3 className="text-2xl font-serif font-bold text-slate-900">{selectedSession.name}</h3>
                                     <p className="text-xs text-orange-700 font-mono mt-1">
                                         Student ID: {selectedSession.studentId} • Program: {selectedSession.program} ({selectedSession.graduationYear})
                                     </p>
@@ -597,16 +615,10 @@ export default function AdminPortal({ adminUser, onLogout }) {
 
                                 <div className="flex items-center space-x-2">
                                     <button
-                                        onClick={(e) => handleDeleteSession(selectedSession, e)}
-                                        className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-rose-50 border border-rose-200 hover:bg-rose-600 hover:text-white text-rose-700 text-xs font-bold transition-all cursor-pointer"
-                                        title="Delete this session from database"
-                                    >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                        <span>Delete</span>
-                                    </button>
-                                    <button
+                                        type="button"
                                         onClick={() => setSelectedSession(null)}
                                         className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-orange-50 cursor-pointer"
+                                        title="Close Preview"
                                     >
                                         <X className="w-5 h-5" />
                                     </button>
@@ -614,7 +626,7 @@ export default function AdminPortal({ adminUser, onLogout }) {
                             </div>
 
                             {/* Session Quick Metrics */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs shrink-0">
                                 <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
                                     <div className="text-slate-500 text-[10px] uppercase">Overall Score:</div>
                                     <div className="text-amber-700 font-bold text-base flex items-center gap-1">
@@ -628,24 +640,26 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                 </div>
                                 <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
                                     <div className="text-slate-500 text-[10px] uppercase">Employment:</div>
-                                    <div className="text-emerald-700 font-bold text-sm truncate">{selectedSession.employmentStatus}</div>
+                                    <div className={`font-bold text-sm truncate ${isEmployed(selectedSession.employmentStatus) ? 'text-emerald-700' : 'text-slate-700'
+                                        }`}>
+                                        {selectedSession.employmentStatus}
+                                    </div>
                                 </div>
                                 <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
                                     <div className="text-slate-500 text-[10px] uppercase">Sentiment Analysis:</div>
-                                    <div className={`font-bold text-sm ${
-                                        selectedSession.sentiment?.label === 'Positive'
+                                    <div className={`font-bold text-sm ${selectedSession.sentiment?.label === 'Positive'
                                             ? 'text-emerald-700'
                                             : selectedSession.sentiment?.label === 'Negative'
                                                 ? 'text-rose-700'
                                                 : 'text-amber-700'
-                                    }`}>
+                                        }`}>
                                         {selectedSession.sentiment?.label || 'Neutral'} ({Math.round((selectedSession.sentiment?.score || 0.5) * 100)}%)
                                     </div>
                                 </div>
                             </div>
 
                             {/* Sentiment Gauge Card */}
-                            <div className="p-4 rounded-2xl bg-orange-50/40 border border-orange-200/60 space-y-2">
+                            <div className="p-4 rounded-2xl bg-orange-50/40 border border-orange-200/60 space-y-2 shrink-0">
                                 <div className="flex items-center justify-between text-xs font-mono">
                                     <span className="font-bold text-slate-700">Sentiment Polarity Gauge:</span>
                                     <span className="font-bold text-orange-700">
@@ -653,7 +667,7 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                     </span>
                                 </div>
                                 <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                                    <div 
+                                    <div
                                         className="h-full bg-gradient-to-r from-amber-400 to-emerald-500 transition-all duration-300"
                                         style={{ width: `${Math.max(8, Math.min(100, (selectedSession.sentiment?.score || 0.5) * 100))}%` }}
                                     />
@@ -661,13 +675,13 @@ export default function AdminPortal({ adminUser, onLogout }) {
                             </div>
 
                             {/* Complete Question-by-Question Transcribed Q&A Log */}
-                            <div className="space-y-3">
-                                <div className="flex items-center space-x-2 text-xs font-mono text-orange-800 border-b border-orange-100 pb-2">
+                            <div className="flex-1 min-h-0 flex flex-col space-y-3 pt-1">
+                                <div className="flex items-center space-x-2 text-xs font-mono text-orange-800 border-b border-orange-100 pb-2 shrink-0">
                                     <FileText className="w-4 h-4 text-orange-600" />
                                     <span className="font-bold uppercase tracking-wider">Verbatim Transcribed Interview Log</span>
                                 </div>
 
-                                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                                <div className="flex-1 min-h-0 overflow-y-auto pr-1.5 space-y-3">
                                     {selectedSession.rawResponses ? (
                                         LSPU_SURVEY_STRUCTURE.map((section) => {
                                             const sectionQs = section.questions.filter(q => selectedSession.rawResponses[q.id] !== undefined);
@@ -682,7 +696,6 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                                         {sectionQs.map(q => (
                                                             <div key={q.id} className="text-xs space-y-1">
                                                                 <p className="font-semibold text-slate-800">
-                                                                    <span className="font-mono text-orange-600 text-[10px] mr-1">[{q.id}]</span>
                                                                     {q.question}
                                                                 </p>
                                                                 <div className="p-2.5 rounded-lg bg-white border border-orange-100 text-slate-700 italic font-mono text-[11px]">
@@ -716,6 +729,52 @@ export default function AdminPortal({ adminUser, onLogout }) {
                                         </div>
                                     )}
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {/* CUSTOM DELETE CONFIRMATION MODAL */}
+                {sessionToDelete && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
+                        <div
+                            className="w-full max-w-md rounded-3xl p-6 sm:p-8 border border-orange-200 shadow-2xl bg-white space-y-5 text-center text-slate-800"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="w-14 h-14 rounded-2xl bg-rose-100 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto shadow-xs">
+                                <Trash2 className="w-7 h-7" />
+                            </div>
+
+                            <div className="space-y-2">
+                                <h3 className="text-lg font-serif font-bold text-slate-900">Delete Interview Session?</h3>
+                                <p className="text-xs text-slate-600 leading-relaxed">
+                                    Are you sure you want to delete the interview session for <strong className="text-slate-900">{sessionToDelete.name}</strong> ({sessionToDelete.studentId})? This will permanently remove the record from PostgreSQL.
+                                </p>
+                            </div>
+
+                            <div className="flex items-center justify-center gap-3 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setSessionToDelete(null)}
+                                    disabled={isDeleting}
+                                    className="flex-1 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all border border-slate-200 cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={confirmDeleteSession}
+                                    disabled={isDeleting}
+                                    className="flex-1 px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-md shadow-rose-600/20 transition-all cursor-pointer flex items-center justify-center space-x-1.5"
+                                >
+                                    {isDeleting ? (
+                                        <span>Deleting...</span>
+                                    ) : (
+                                        <>
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                            <span>Confirm Delete</span>
+                                        </>
+                                    )}
+                                </button>
                             </div>
                         </div>
                     </div>

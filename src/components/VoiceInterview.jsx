@@ -107,16 +107,28 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
             if (res.ok) {
                 const data = await res.json();
                 if (data.success && data.transcript && data.transcript.trim()) {
-                    const whisperText = data.transcript.trim();
+                    let whisperText = data.transcript.trim();
+                    const activeQ = currentQuestionRef.current;
+                    if (activeQ) {
+                        if (activeQ.id === 'demo_middleinitial') {
+                            whisperText = correctFilipinoName(whisperText, 'middleinitial');
+                        } else if (activeQ.id === 'demo_lastname') {
+                            whisperText = correctFilipinoName(whisperText, 'lastname');
+                        } else if (activeQ.id === 'demo_firstname') {
+                            whisperText = correctFilipinoName(whisperText, 'firstname');
+                        } else if (activeQ.id === 'demo_studentid' || activeQ.id === 'demo_grad_year' || activeQ.type === 'rating') {
+                            whisperText = convertWordsToDigits(whisperText, activeQ.type === 'rating');
+                        }
+                    }
                     setLiveTranscript(prev => {
                         const base = (prev || transcriptAccumulated || '').trim();
-                        if (!base) return whisperText;
+                        if (!base || activeQ?.type === 'rating' || activeQ?.id === 'demo_middleinitial') return whisperText;
                         if (base.toLowerCase().includes(whisperText.toLowerCase())) return base;
                         return `${base} ${whisperText}`.trim();
                     });
                     setTranscriptAccumulated(prev => {
                         const base = (prev || '').trim();
-                        if (!base) return whisperText;
+                        if (!base || activeQ?.type === 'rating' || activeQ?.id === 'demo_middleinitial') return whisperText;
                         if (base.toLowerCase().includes(whisperText.toLowerCase())) return base;
                         return `${base} ${whisperText}`.trim();
                     });
@@ -273,7 +285,7 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                         newCommitted = correctFilipinoName(newCommitted, fieldType);
                     }
                     if (isNumericField) {
-                        newCommitted = convertWordsToDigits(newCommitted);
+                        newCommitted = convertWordsToDigits(newCommitted, activeQ?.type === 'rating');
                     }
                     return newCommitted;
                 });
@@ -285,7 +297,7 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                             updated = correctFilipinoName(updated, fieldType);
                         }
                         if (isNumericField) {
-                            updated = convertWordsToDigits(updated);
+                            updated = convertWordsToDigits(updated, activeQ?.type === 'rating');
                         }
                         return updated;
                     });
@@ -599,9 +611,11 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                 {/* Soft Ambient Cloud Highlights for visual depth */}
                 <div className="cloud-ambient w-[600px] h-[350px] bg-white top-16 left-1/4 -z-0 pointer-events-none"></div>
                 <div className="cloud-ambient w-[500px] h-[300px] bg-amber-200/25 bottom-10 right-10 -z-0 pointer-events-none"></div>
+                {/* Faint Technology & Computing Background Grid (3-6% Opacity) */}
+                <div className="tech-circuit-pattern -z-0"></div>
 
-                {/* Top Navigation Bar - Full-width layout matching landing page */}
-                <header className="relative z-20 w-full bg-[#d59e66] shadow-md border-b border-[#c28a52]/40">
+                {/* Top Navigation Bar - Darker/flatter structural separation from atmospheric body */}
+                <header className="relative z-20 w-full bg-[#c08444] shadow-md border-b border-[#a97135]/50">
                     <div className="w-full px-4 sm:px-6 py-2 flex items-center justify-between">
                         {/* Left: CCS Logo 60x60px + College & University Title */}
                         <div className="flex items-center space-x-3">
@@ -701,46 +715,58 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
 
                 {/* Main Interview Body: Unified Whole Card */}
                 <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-6 md:py-8 max-w-4xl mx-auto w-full">
-                    {/* The Entire Section Made Whole: Complementary Sand & Parchment Palette */}
-                    <div className="w-full rounded-3xl overflow-hidden shadow-xl shadow-orange-950/10 border border-[#d8c8b6] bg-[#fbf7f0]/95 backdrop-blur-md text-stone-800 flex flex-col transition-all duration-300">
+                    {/* The Entire Section Made Whole: Subtle Flat Blue Panel Interface (#eaf3ff / linear-gradient) */}
+                    <div 
+                        className="w-full rounded-3xl overflow-hidden shadow-2xl shadow-slate-900/10 border border-blue-200/80 text-slate-800 flex flex-col transition-all duration-300"
+                        style={{ background: 'linear-gradient(180deg, #e7f1ff 0%, #dcecf7 100%)' }}
+                    >
                         {/* 1. Integrated Progress & Section Header */}
-                        <div className="px-6 py-4 bg-[#f3eae0] border-b border-[#e2d4c4] flex items-center justify-between flex-wrap gap-2">
+                        <div className="px-6 py-3.5 bg-[#dbeafe]/70 border-b border-blue-200/80 flex items-center justify-between flex-wrap gap-2">
                             <div className="flex items-center space-x-3">
-                                <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-[#d59e66]/20 text-[#8c521f] border border-[#d59e66]/40">
+                                <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-[#0E2345] text-white shadow-xs">
                                     Section 0{currentQuestion.sectionId} of 05
                                 </span>
-                                <h3 className="text-xs font-bold text-stone-700 hidden sm:block">
+                                <h3 className="text-xs font-bold text-[#0E2345] hidden sm:block">
                                     {currentQuestion.sectionTitle}
                                 </h3>
                             </div>
 
                             <div className="flex items-center space-x-2">
-                                <span className="text-xs font-mono text-[#9a5820] font-bold">
+                                <span className="text-xs font-mono text-[#0E2345] font-bold">
                                     Question {currentQIndex + 1} / {allQuestions.length}
                                 </span>
                             </div>
                         </div>
 
-                        {/* Thin Progress Bar Strip */}
-                        <div className="w-full h-1.5 bg-[#e4d6c6] overflow-hidden">
+                        {/* Thin Progress Bar Strip with Blue -> Orange Transition */}
+                        <div className="w-full h-1.5 bg-blue-200/60 overflow-hidden">
                             <div 
-                                className="h-full bg-gradient-to-r from-[#d59e66] to-[#b97a3f] transition-all duration-300"
+                                className="h-full bg-gradient-to-r from-[#2563EB] to-[#D79A5C] transition-all duration-300"
                                 style={{ width: `${((currentQIndex + 1) / allQuestions.length) * 100}%` }}
                             />
                         </div>
 
-                        {/* 2. AI Voice Assistant Question Prompt Zone */}
-                        <div className="p-6 md:p-8 space-y-4 border-b border-[#e6d8c8] bg-white/70">
+                        {/* 2. AI Voice Assistant Question Prompt Zone - White Content Area with Orange Line Accent */}
+                        <div 
+                            className="p-6 md:p-8 space-y-4 relative"
+                            style={{ 
+                                background: 'rgba(255, 255, 255, 0.92)',
+                                borderBottom: '2px solid rgba(215, 154, 92, 0.45)'
+                            }}
+                        >
                             <div className="flex items-start justify-between gap-4">
                                 <div className="flex items-start space-x-3.5">
-                                    <div className="p-3 rounded-2xl bg-[#d59e66]/15 text-[#9a5820] border border-[#d59e66]/30 shrink-0 mt-0.5">
-                                        <Sparkles className="w-6 h-6 text-[#9a5820] animate-pulse" />
+                                    <div className="p-3 rounded-2xl bg-[#0E2345]/10 text-[#0E2345] border border-[#0E2345]/15 shrink-0 mt-0.5 shadow-xs">
+                                        <Sparkles className="w-6 h-6 text-[#0E2345] animate-pulse" />
                                     </div>
                                     <div className="space-y-1">
-                                        <span className="text-xs font-mono text-[#9a5820] font-bold tracking-wide uppercase">
-                                            AI Exit Interview Assistant
-                                        </span>
-                                        <h2 className="text-lg md:text-2xl font-serif font-bold text-stone-900 leading-snug">
+                                        <div className="flex items-center space-x-2">
+                                            <span className="w-1.5 h-3.5 bg-[#D79A5C] rounded-full inline-block shrink-0"></span>
+                                            <span className="text-xs font-mono text-[#0E2345] font-bold tracking-wider uppercase">
+                                                AI Exit Interview Assistant
+                                            </span>
+                                        </div>
+                                        <h2 className="text-lg md:text-2xl font-serif font-bold text-[#0E2345] leading-snug">
                                             {currentQuestion.question}
                                         </h2>
                                     </div>
@@ -748,35 +774,39 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
 
                                 <button
                                     onClick={() => speakText(currentQuestion.question)}
-                                    className="p-2.5 rounded-xl bg-[#f3eae0] hover:bg-[#eae0d4] text-stone-700 border border-[#d8c8b6] hover:border-[#b97a3f] transition-all shrink-0 cursor-pointer shadow-xs"
+                                    className="p-2.5 rounded-xl bg-white hover:bg-blue-50 text-[#0E2345] border border-blue-200/80 hover:border-[#2563EB] transition-all shrink-0 cursor-pointer shadow-xs"
                                     title="Repeat AI Question Audio"
                                 >
-                                    <Volume2 className={`w-4 h-4 ${isSpeaking ? 'text-[#9a5820] animate-bounce' : ''}`} />
+                                    <Volume2 className={`w-4 h-4 ${isSpeaking ? 'text-[#2563EB] animate-bounce' : ''}`} />
                                 </button>
                             </div>
 
                             {currentQuestion.promptHint && (
-                                <p className="text-xs font-mono text-stone-600 bg-[#f7efe5] p-3 rounded-xl border border-[#dfd0be]">
-                                    💡 Hint / Format: <span className="text-[#9a5820] font-semibold">{currentQuestion.promptHint}</span>
+                                <p className="text-xs font-mono text-slate-700 bg-[#eaf3ff]/80 p-3 rounded-xl border border-blue-200/80">
+                                    💡 Hint / Format: <span className="text-[#0E2345] font-bold">{currentQuestion.promptHint}</span>
                                 </p>
                             )}
                         </div>
 
                         {/* 3. Interactive Response Body */}
-                        <div className="p-6 md:p-8 space-y-6 flex-1">
+                        <div className="p-6 md:p-8 space-y-6 flex-1 bg-transparent">
                             {/* Choice Questions */}
                             {currentQuestion.type === 'choice' && (
                                 <div className="space-y-3">
-                                    <label className="text-xs font-mono text-stone-600 font-semibold">Select option or speak your response:</label>
+                                    <label className="text-xs font-mono text-[#0E2345] font-bold">Select option or speak your response:</label>
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                         {currentQuestion.options.map((opt) => (
                                             <button
                                                 key={opt}
                                                 onClick={() => handleSelectOption(opt)}
-                                                className={`p-4 rounded-2xl text-left text-xs font-semibold transition-all border cursor-pointer ${
+                                                style={liveTranscript === opt ? {} : {
+                                                    background: 'rgba(255, 255, 255, 0.92)',
+                                                    border: '1px solid rgba(37, 99, 235, 0.15)'
+                                                }}
+                                                className={`p-4 rounded-2xl text-left text-xs font-semibold transition-all cursor-pointer ${
                                                     liveTranscript === opt
-                                                        ? 'bg-gradient-to-r from-[#d59e66] to-[#c28346] text-white font-bold border-[#b97a3f] shadow-md shadow-[#d59e66]/20 scale-[1.01]'
-                                                        : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5]'
+                                                        ? 'bg-[#0E2345] text-white font-bold border border-[#0E2345] shadow-md shadow-[#0E2345]/20 scale-[1.01]'
+                                                        : 'text-[#0E2345] hover:border-[#2563EB] hover:bg-blue-50/70 shadow-xs'
                                                 }`}
                                             >
                                                 {opt}
@@ -786,108 +816,94 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                                 </div>
                             )}
 
-                            {/* Rating Questions */}
+                            {/* Rating Questions: Quick-select option chips alongside voice response */}
                             {currentQuestion.type === 'rating' && (
-                                <div className="space-y-4">
-                                    <label className="text-xs font-mono text-[#9a5820] font-semibold">👆 Tap your rating below:</label>
-                                    <div className="grid grid-cols-5 gap-3">
-                                        {[1, 2, 3, 4, 5].map((val) => (
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between text-xs font-mono text-[#0E2345] font-bold">
+                                        <span>Speak your rating (1-5) or tap an option below:</span>
+                                        <span className="text-slate-500 text-[11px] font-normal">1 = Poor • 5 = Excellent</span>
+                                    </div>
+                                    <div className="grid grid-cols-5 gap-2.5">
+                                        {[
+                                            { val: '1', label: 'Poor' },
+                                            { val: '2', label: 'Fair' },
+                                            { val: '3', label: 'Satisfactory' },
+                                            { val: '4', label: 'Very Good' },
+                                            { val: '5', label: 'Excellent' }
+                                        ].map(({ val, label }) => (
                                             <button
                                                 key={val}
-                                                onClick={() => handleSelectOption(val.toString())}
-                                                className={`p-5 rounded-2xl text-center font-bold text-lg transition-all border cursor-pointer ${
-                                                    liveTranscript === val.toString()
-                                                        ? 'bg-gradient-to-r from-[#d59e66] to-[#c28346] text-white border-[#b97a3f] shadow-md scale-105'
-                                                        : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5] hover:scale-105'
+                                                type="button"
+                                                onClick={() => handleSelectOption(val)}
+                                                style={liveTranscript === val ? {} : {
+                                                    background: 'rgba(255, 255, 255, 0.92)',
+                                                    border: '1px solid rgba(37, 99, 235, 0.15)'
+                                                }}
+                                                className={`p-3 rounded-2xl text-center transition-all cursor-pointer ${
+                                                    liveTranscript === val
+                                                        ? 'bg-[#0E2345] text-white border border-[#0E2345] shadow-md scale-105 font-extrabold'
+                                                        : 'text-[#0E2345] hover:border-[#2563EB] hover:bg-blue-50/70 hover:scale-102 shadow-xs font-bold'
                                                 }`}
                                             >
-                                                {val}
+                                                <div className="text-base font-extrabold">{val}</div>
+                                                <div className="text-[10px] font-mono opacity-80 hidden sm:block">{label}</div>
                                             </button>
                                         ))}
                                     </div>
-                                    <div className="flex items-center justify-between text-[11px] font-mono text-stone-500 px-1">
-                                        <span>1 = Poor</span>
-                                        <span>5 = Excellent</span>
-                                    </div>
-                                    {liveTranscript && (
-                                        <div className="p-3 rounded-xl bg-[#f3eae0] border border-[#d59e66]/40 text-center">
-                                            <span className="text-sm font-bold text-[#9a5820]">Selected Rating: {liveTranscript}</span>
-                                        </div>
-                                    )}
                                 </div>
                             )}
 
-                            {/* Middle Initial Selector Grid */}
-                            {currentQuestion.id === 'demo_middleinitial' && (
-                                <div className="space-y-3">
-                                    <label className="text-xs font-mono text-[#9a5820] font-semibold">👆 Tap your Middle Initial below:</label>
-                                    <div className="grid grid-cols-7 sm:grid-cols-10 gap-2">
-                                        {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'N/A'].map((letter) => {
-                                            const initialVal = letter === 'N/A' ? 'N/A' : letter + '.';
-                                            return (
-                                                <button
-                                                    key={letter}
-                                                    onClick={() => handleSelectOption(initialVal)}
-                                                    className={`p-3 rounded-xl font-bold text-sm transition-all border cursor-pointer ${
-                                                        liveTranscript === initialVal
-                                                            ? 'bg-[#d59e66] text-white border-[#b97a3f] shadow-sm scale-110'
-                                                            : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#c28346] hover:bg-[#f7efe5] hover:scale-105'
-                                                    }`}
-                                                >
-                                                    {letter}
-                                                </button>
-                                            );
-                                        })}
+                            {/* Voice Input Display Container (Active for ALL questions) */}
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between border-b border-blue-200/80 pb-2">
+                                    <div className="flex items-center space-x-2">
+                                        <Mic className={`w-4 h-4 ${isListening ? 'text-rose-500 animate-ping' : 'text-[#2563EB]'}`} />
+                                        <h4 className="text-xs font-mono text-[#0E2345] font-bold">
+                                            Transcribed Spoken Voice Response
+                                        </h4>
                                     </div>
+
                                     {liveTranscript && (
-                                        <div className="p-3 rounded-xl bg-[#f3eae0] border border-[#d59e66]/40 text-center">
-                                            <span className="text-sm font-bold text-[#9a5820]">Selected: {liveTranscript}</span>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Voice Input Display Container (Standard text questions) */}
-                            {currentQuestion.type !== 'rating' && currentQuestion.id !== 'demo_middleinitial' && (
-                                <div className="space-y-4">
-                                    <div className="flex items-center justify-between border-b border-[#e6d8c8] pb-2">
-                                        <div className="flex items-center space-x-2">
-                                            <Mic className={`w-4 h-4 ${isListening ? 'text-rose-500 animate-ping' : 'text-[#d59e66]'}`} />
-                                            <h4 className="text-xs font-mono text-stone-700 font-semibold">
-                                                Transcribed Spoken Voice Response
-                                            </h4>
-                                        </div>
-
-                                        {liveTranscript && (
-                                            <button
-                                                onClick={() => {
-                                                    setLiveTranscript('');
-                                                    setTranscriptAccumulated('');
-                                                }}
-                                                className="text-[11px] font-mono text-rose-600 hover:text-rose-700 underline cursor-pointer"
-                                            >
-                                                Clear Audio Transcript
-                                            </button>
-                                        )}
-                                    </div>
-
-                                    {/* Voice Display Speech Box (Editable Text Area) */}
-                                    <div className="space-y-3">
-                                        <textarea
-                                            value={liveTranscript}
-                                            onChange={(e) => {
-                                                setLiveTranscript(e.target.value);
-                                                setTranscriptAccumulated(e.target.value);
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setLiveTranscript('');
+                                                setTranscriptAccumulated('');
                                             }}
-                                            placeholder="Press the microphone button below to speak, or click here to type/edit your answer..."
-                                            rows={currentQuestion.id === 'demo_firstname' || currentQuestion.id === 'demo_lastname' ? 2 : 3}
-                                            className="w-full p-4 rounded-2xl bg-white border border-[#d8c8b6] text-base font-sans text-stone-900 leading-relaxed text-center font-medium focus:outline-none focus:border-[#d59e66] focus:ring-2 focus:ring-[#d59e66]/25 transition-all resize-none shadow-inner placeholder:text-stone-400"
+                                            className="text-[11px] font-mono text-rose-600 hover:text-rose-700 underline cursor-pointer"
+                                        >
+                                            Clear Audio Transcript
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* White Answer Area Box (rgba(255,255,255,0.92) with 1px border rgba(37,99,235,0.15)) */}
+                                <div className="space-y-3">
+                                    <textarea
+                                        value={liveTranscript}
+                                        onChange={(e) => {
+                                            setLiveTranscript(e.target.value);
+                                            setTranscriptAccumulated(e.target.value);
+                                        }}
+                                        placeholder={
+                                            currentQuestion.type === 'rating'
+                                                ? "Speak your rating (1 to 5, e.g., '5' or 'Excellent'), or click here to type..."
+                                                : currentQuestion.id === 'demo_middleinitial'
+                                                ? "Speak your Middle Initial (e.g., 'M' or 'A'), or click here to type..."
+                                                : "Press the microphone button below to speak, or click here to type/edit your answer..."
+                                        }
+                                        rows={currentQuestion.id === 'demo_firstname' || currentQuestion.id === 'demo_lastname' || currentQuestion.id === 'demo_middleinitial' || currentQuestion.type === 'rating' ? 2 : 3}
+                                            style={{
+                                                background: 'rgba(255, 255, 255, 0.92)',
+                                                border: '1px solid rgba(37, 99, 235, 0.15)'
+                                            }}
+                                            className="w-full p-4 rounded-2xl text-base font-sans text-[#0E2345] leading-relaxed text-center font-medium focus:outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/20 transition-all resize-none shadow-sm placeholder:text-slate-400"
                                         />
 
                                         {/* Name Spelling Suggestion Chips */}
                                         {getNameSpellingSuggestions(liveTranscript).length > 0 && (
-                                            <div className="p-3.5 rounded-2xl bg-[#f7efe5] border border-[#dfd0be] space-y-2 text-center">
-                                                <span className="text-xs font-mono text-[#9a5820] font-semibold block">
+                                            <div className="p-3.5 rounded-2xl bg-white/90 border border-blue-200/80 space-y-2 text-center shadow-xs">
+                                                <span className="text-xs font-mono text-[#0E2345] font-bold block">
                                                     ✨ Spelling Suggestions (Tap to select your exact name):
                                                 </span>
                                                 <div className="flex flex-wrap items-center justify-center gap-2">
@@ -900,8 +916,8 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                                                             }}
                                                             className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
                                                                 liveTranscript === candidate
-                                                                    ? 'bg-[#d59e66] text-white border-[#b97a3f] shadow-sm scale-105'
-                                                                    : 'bg-white text-stone-800 border-[#d8c8b6] hover:border-[#b97a3f] hover:bg-[#d59e66] hover:text-white'
+                                                                    ? 'bg-[#0E2345] text-white border-[#0E2345] shadow-sm scale-105'
+                                                                    : 'bg-white text-[#0E2345] border-blue-200 hover:border-[#2563EB] hover:bg-blue-50'
                                                             }`}
                                                         >
                                                             {candidate}
@@ -912,14 +928,14 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                                         )}
                                     </div>
 
-                                    {/* Real-time Voice Recording Button */}
+                                    {/* Bright Blue Interactive Voice Recording Action Button */}
                                     <div className="flex flex-col items-center justify-center space-y-3 pt-1">
                                         <button
                                             onClick={toggleListening}
-                                            className={`flex items-center space-x-3 px-8 py-4 rounded-2xl font-extrabold text-sm transition-all shadow-md cursor-pointer ${
+                                            className={`flex items-center space-x-3 px-8 py-4 rounded-2xl font-extrabold text-sm transition-all shadow-lg cursor-pointer ${
                                                 isListening
-                                                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/25 animate-pulse'
-                                                    : 'bg-gradient-to-r from-[#d59e66] to-[#c28346] hover:from-[#c88f55] hover:to-[#b47437] text-white shadow-[#c28346]/25 transform hover:scale-[1.02]'
+                                                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30 animate-pulse'
+                                                    : 'bg-[#2563EB] hover:bg-[#1d4ed8] text-white shadow-blue-600/25 transform hover:scale-[1.02] active:scale-98'
                                             }`}
                                         >
                                             {isListening ? (
@@ -937,8 +953,8 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
 
                                         {/* Whisper Large-v3-Turbo Transcribing Indicator */}
                                         {isTranscribingWithWhisper && (
-                                            <div className="flex items-center justify-center space-x-2 py-2 px-4 rounded-xl bg-[#d59e66]/15 border border-[#d59e66]/35 text-xs font-mono text-[#8c521f] animate-pulse">
-                                                <Sparkles className="w-4 h-4 animate-spin text-[#8c521f]" />
+                                            <div className="flex items-center justify-center space-x-2 py-2 px-4 rounded-xl bg-white/90 border border-blue-200 text-xs font-mono text-[#0E2345] font-bold animate-pulse shadow-xs">
+                                                <Sparkles className="w-4 h-4 animate-spin text-[#2563EB]" />
                                                 <span>⚡ Whisper Large-v3-Turbo Transcribing Audio...</span>
                                             </div>
                                         )}
@@ -947,26 +963,26 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                                         {isListening ? (
                                             <div className="w-full max-w-xs space-y-1.5 pt-1 text-center">
                                                 <div className="flex items-center justify-between text-[11px] font-mono px-1">
-                                                    <span className="text-stone-600 flex items-center gap-1">
+                                                    <span className="text-slate-600 flex items-center gap-1">
                                                         <span className="relative flex h-2 w-2">
                                                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75"></span>
                                                             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
                                                         </span>
                                                         Mic Signal:
                                                     </span>
-                                                    <span className={`font-bold ${micVolume > 8 ? 'text-emerald-700' : 'text-[#9a5820]'}`}>
+                                                    <span className={`font-bold ${micVolume > 8 ? 'text-emerald-700' : 'text-[#0E2345]'}`}>
                                                         {micVolume}% {micVolume > 8 ? '✓ Receiving Voice' : '⚠️ Speak into Mic'}
                                                     </span>
                                                 </div>
-                                                <div className="h-2.5 w-full bg-[#e6d8c8] rounded-full overflow-hidden border border-[#d8c8b6] flex">
+                                                <div className="h-2.5 w-full bg-blue-200/70 rounded-full overflow-hidden border border-blue-300/60 flex">
                                                     <div
-                                                        className="h-full bg-gradient-to-r from-[#d59e66] to-emerald-600 transition-all duration-75"
+                                                        className="h-full bg-gradient-to-r from-[#2563EB] to-[#D79A5C] transition-all duration-75"
                                                         style={{ width: `${Math.max(6, micVolume)}%` }}
                                                     />
                                                 </div>
                                             </div>
                                         ) : (
-                                            <span className="text-[11px] font-mono text-stone-500">
+                                            <span className="text-[11px] font-mono text-slate-500">
                                                 Click to record or add to your voice answer.
                                             </span>
                                         )}
@@ -974,28 +990,27 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
 
                                     {/* Real-time Sentiment Gauge */}
                                     {liveTranscript.length > 5 && (
-                                        <div className="p-3 rounded-xl bg-[#f7efe5] border border-[#dfd0be] flex items-center justify-between text-xs font-mono">
-                                            <span className="text-stone-600">Live Voice Sentiment AI:</span>
+                                        <div className="p-3 rounded-xl bg-white border border-blue-200/80 flex items-center justify-between text-xs font-mono shadow-xs">
+                                            <span className="text-slate-600">Live Voice Sentiment AI:</span>
                                             <span className={`font-bold ${
-                                                currentSentiment.label === 'Positive' ? 'text-emerald-700' : currentSentiment.label === 'Negative' ? 'text-rose-600' : 'text-[#9a5820]'
+                                                currentSentiment.label === 'Positive' ? 'text-emerald-700' : currentSentiment.label === 'Negative' ? 'text-rose-600' : 'text-[#0E2345]'
                                             }`}>
                                                 {currentSentiment.label} Polarity ({Math.round(currentSentiment.score * 100)}%)
                                             </span>
                                         </div>
                                     )}
                                 </div>
-                            )}
                         </div>
 
                         {/* 4. Unified Navigation Footer inside the card */}
-                        <div className="px-6 py-4 bg-[#f3eae0] border-t border-[#e2d4c4] flex items-center justify-between">
+                        <div className="px-6 py-4 bg-[#dbeafe]/70 border-t border-blue-200/80 flex items-center justify-between">
                             <button
                                 onClick={handlePrev}
                                 disabled={currentQIndex === 0}
                                 className={`flex items-center space-x-2 px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${
                                     currentQIndex === 0 
                                         ? 'opacity-0 cursor-default' 
-                                        : 'bg-white hover:bg-[#eae0d4] text-stone-700 border border-[#d8c8b6] cursor-pointer shadow-xs'
+                                        : 'bg-white hover:bg-blue-50 text-[#0E2345] border border-blue-200/80 cursor-pointer shadow-xs'
                                 }`}
                             >
                                 <ArrowLeft className="w-4 h-4" />
@@ -1005,10 +1020,10 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                             <button
                                 onClick={handleSaveAndNext}
                                 disabled={isRefining}
-                                className={`flex items-center space-x-2 px-7 py-3 rounded-xl text-white text-xs font-extrabold shadow-md transition-all transform hover:scale-[1.02] cursor-pointer ${
+                                className={`flex items-center space-x-2 px-7 py-3 rounded-xl text-white text-xs font-extrabold shadow-md shadow-blue-600/25 transition-all transform hover:scale-[1.02] active:scale-98 cursor-pointer ${
                                     isRefining
-                                        ? 'bg-[#c28346] animate-pulse cursor-wait shadow-[#c28346]/30'
-                                        : 'bg-gradient-to-r from-[#d59e66] to-[#c28346] hover:from-[#c88f55] hover:to-[#b47437] shadow-[#c28346]/20'
+                                        ? 'bg-blue-500 animate-pulse cursor-wait shadow-blue-500/30'
+                                        : 'bg-[#2563EB] hover:bg-[#1d4ed8]'
                                 }`}
                             >
                                 {isRefining ? (

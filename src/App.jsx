@@ -49,7 +49,7 @@ export default function App() {
     };
 
     return (
-        <div className="min-h-screen bg-cloud-gradient font-sans antialiased text-slate-800">
+        <div className={`bg-cloud-gradient font-sans antialiased text-slate-800 ${view === 'landing' ? 'h-screen max-h-screen overflow-hidden' : 'min-h-screen'}`}>
             {/* View 1: Landing Page (Public Student View) */}
             {view === 'landing' && (
                 <LandingPage

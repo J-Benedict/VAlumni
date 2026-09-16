@@ -77,7 +77,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
     """
     Transcribe audio upload (e.g. webm, wav, mp3, ogg, m4a) using Whisper Large-v3-Turbo.
     """
-    suffix = os.path.splitext(file.filename)[1] or ".webm"
+    suffix = os.path.splitext(file.filename or "")[1] or ".webm"
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     temp_path = temp_file.name
 
