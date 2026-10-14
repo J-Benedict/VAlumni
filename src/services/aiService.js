@@ -592,75 +592,11 @@ export function generateThematicSummaries(records = []) {
  * - Student ID: formatted 8-digit / XXXX-XXXX string
  * - Names & Voice Text: clean speech stutters & correct phonetic misspellings
  */
-export async function refineTranscriptWithGemini(rawTranscript, questionObj, customApiKey = '') {
+export async function refineTranscriptWithGemini(rawTranscript, questionObj) {
     if (!rawTranscript || typeof rawTranscript !== 'string' || !rawTranscript.trim()) {
         return rawTranscript || '';
     }
-
-    // Retrieve API key from custom parameter, Vite environment, or localStorage
-    const apiKey = customApiKey ||
-        (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) ||
-        (typeof localStorage !== 'undefined' && localStorage.getItem('valumni_gemini_api_key')) ||
-        '';
-
-    // Fallback to client-side rule-based correctors if no API key present
-    if (!apiKey || apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-        return applyClientSideRuleFallback(rawTranscript, questionObj);
-    }
-
-    const { id, type, question } = questionObj || {};
-    let systemInstruction = "";
-
-    if (id === 'demo_middleinitial') {
-        systemInstruction = "The user was asked for their Middle Initial. Extract and output ONLY a single uppercase letter (A-Z) followed by a period (e.g., 'M.') or 'N/A'. Do not include any explanation or extra words.";
-    } else if (type === 'rating') {
-        systemInstruction = "The user was asked to rate an aspect of their college experience on a scale of 1 to 5. Extract and output ONLY a single integer digit between 1 and 5. Do not include any words, symbols, or punctuation.";
-    } else if (id === 'demo_studentid') {
-        systemInstruction = "The user stated their Student ID number. Format and output ONLY the 8-digit student ID formatted as XXXX-XXXX (e.g. '0123-0456'). Output ONLY the formatted numbers.";
-    } else if (id === 'demo_firstname' || id === 'demo_lastname') {
-        const sampleContext = id === 'demo_firstname'
-            ? (philippineNames?.firstNames ? philippineNames.firstNames.slice(0, 50).join(', ') : 'Maria, Juan, Railey, Bryan, Mark')
-            : 'Coronacion, Urrea, Dela Cruz, Santos, Reyes, Hornilla, Dimaculangan, Catapang, Quemada, Ramos, Mendoza, Peñaranda';
-        systemInstruction = `The user stated their ${id === 'demo_firstname' ? 'First Name' : 'Last Name (Surname)'} in the Philippines. Correct any speech recognition phonetic or Tagalog spelling misrecognitions (e.g. "Koronasyon" -> "Coronacion", "Urea" or "Orea" -> "Urrea", "Dela Cruise" -> "Dela Cruz", "Cornelia" -> "Hornilla"). Known local surnames include: ${sampleContext}. Return proper capitalized Name format only, with no surrounding punctuation or quotes.`;
-    } else {
-        systemInstruction = "Clean up this spoken transcript from a survey. Remove speech stutters (um, ah, like), correct technical computing terminology (e.g., Python, SQL, React, Docker, AWS), and return a clear, grammatically corrected answer. Preserve the user's exact meaning.";
-    }
-
-    try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [
-                    {
-                        role: "user",
-                        parts: [
-                            { text: `Question asked: "${question || ''}"\nRaw Spoken Transcript: "${rawTranscript}"\n\nInstructions: ${systemInstruction}` }
-                        ]
-                    }
-                ],
-                generationConfig: {
-                    temperature: 0.1,
-                    maxOutputTokens: 64
-                }
-            })
-        });
-
-        if (!response.ok) {
-            console.warn('Gemini API returned error status:', response.status);
-            return applyClientSideRuleFallback(rawTranscript, questionObj);
-        }
-
-        const data = await response.json();
-        const refinedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-        if (refinedText) {
-            return refinedText.replace(/^["']|["']$/g, '');
-        }
-    } catch (err) {
-        console.warn('Gemini API post-processing failed, using fallback:', err);
-    }
-
+    // Fully disconnected from external Google AI Studio API: use high-speed local rule corrector
     return applyClientSideRuleFallback(rawTranscript, questionObj);
 }
 

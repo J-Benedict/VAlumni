@@ -22,3 +22,9 @@ pyrefly.toml
 
 # Editor & IDE
 .vscode/
+
+# Database & Runtime Data
+*.db
+*.sqlite
+*.sqlite3
+server/data/

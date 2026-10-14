@@ -2,8 +2,17 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import multer from 'multer';
+import { exec } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
 import pool from './db.js';
+import { seedTranscriptsIfEmpty } from './seedTranscripts.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '.env') });
 dotenv.config();
 
 const app = express();
@@ -57,6 +66,84 @@ app.post('/api/stt/transcribe', upload.single('audio'), async (req, res) => {
     } catch (err) {
         console.error('Error forwarding to Whisper STT service:', err);
         return res.status(500).json({ success: false, message: 'Failed to contact Whisper speech-to-text service.', error: err.message });
+    }
+});
+
+// POST /api/tts/generate - Natural Human Neural TTS Generation (AngeloNeural / JamesNeural)
+app.post('/api/tts/generate', async (req, res) => {
+    try {
+        const { text, voice = 'fil-PH-AngeloNeural' } = req.body || {};
+        if (!text || !text.trim()) {
+            return res.status(400).json({ error: 'Text payload is required.' });
+        }
+
+        // Clean any markdown formatting and phonetically expand acronyms
+        let cleanText = text.replace(/[*_#`~]/g, '')
+            .replace(/\b(LSPU|L\.S\.P\.U\.|L\.\s*S\.\s*P\.\s*U\.)\b/gi, 'L-S-P-U')
+            .replace(/\b(CCS|C\.C\.S\.|C\.\s*C\.\s*S\.)\b/gi, 'C-C-S')
+            .replace(/\b(BSIT|B\.S\.I\.T\.)\b/gi, 'B-S-I-T')
+            .replace(/\b(BSCS|B\.S\.C\.S\.)\b/gi, 'B-S-C-S')
+            .replace(/\bStudent\s+(ID|I\.D\.|I\.\s*D\.)\b/gi, 'Student I-D')
+            .replace(/\b(ID|I\.D\.)\s+number\b/gi, 'I-D number')
+            .replace(/\b(ID|I\.D\.)\b/g, 'I-D')
+            .replace(/\bIT\b/g, 'I-T')
+            .replace(/\bI\.T\.\b/gi, 'I-T')
+            .replace(/\b(AI|A\.I\.)\b/g, 'A-I')
+            .replace(/\bUI\/UX\b/gi, 'U-I U-X')
+            .replace(/\bSQL\b/gi, 'S-Q-L')
+            .replace(/\bAWS\b/gi, 'A-W-S')
+            .replace(/\bPHP\b/gi, 'P-H-P')
+            .replace(/\bWi-?Fi\b/gi, 'Wai-Fai')
+            .trim();
+
+        // 1. Try FastAPI microservice first
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 1800);
+            const resp = await fetch(`${STT_SERVICE_URL}/tts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: cleanText, voice }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (resp.ok) {
+                const buffer = await resp.arrayBuffer();
+                res.setHeader('Content-Type', 'audio/mpeg');
+                return res.send(Buffer.from(buffer));
+            }
+        } catch (e) {
+            // Microservice not available; fall through to Python CLI fallback
+        }
+
+        // 2. Direct Python CLI execution fallback (using edge-tts)
+        const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
+        const textFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.txt`);
+        await fs.promises.writeFile(textFile, cleanText, 'utf8');
+
+        exec(`py -m edge_tts --voice "${voice}" --file "${textFile}" --write-media "${tmpFile}"`, async (error) => {
+            try {
+                if (fs.existsSync(textFile)) await fs.promises.unlink(textFile);
+                if (error || !fs.existsSync(tmpFile)) {
+                    console.error('Python edge-tts fallback error:', error);
+                    return res.status(500).json({ error: 'Failed to generate neural audio.' });
+                }
+
+                const audioBuffer = await fs.promises.readFile(tmpFile);
+                await fs.promises.unlink(tmpFile);
+
+                res.setHeader('Content-Type', 'audio/mpeg');
+                res.setHeader('Cache-Control', 'public, max-age=3600');
+                return res.send(audioBuffer);
+            } catch (cleanupErr) {
+                console.error('TTS cleanup error:', cleanupErr);
+                return res.status(500).json({ error: 'TTS processing error' });
+            }
+        });
+    } catch (err) {
+        console.error('Error generating neural speech:', err);
+        return res.status(500).json({ error: 'TTS generation server error' });
     }
 });
 
@@ -286,9 +373,44 @@ app.post('/api/admin/login', async (req, res) => {
     }
 });
 
-// Auto-initialize admin_users table in PostgreSQL if not already present
+// Auto-initialize tables in PostgreSQL/Cloud database if not already present
 async function initDb() {
     try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS interview_transcripts (
+                id VARCHAR(100) PRIMARY KEY,
+                timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                source VARCHAR(50) DEFAULT 'voice_interview',
+                student_id VARCHAR(50),
+                name VARCHAR(255) NOT NULL,
+                program VARCHAR(100),
+                graduation_year VARCHAR(20),
+                capstone_role VARCHAR(100),
+                rate_core INTEGER DEFAULT 0,
+                rate_electives INTEGER DEFAULT 0,
+                rate_mentorship INTEGER DEFAULT 0,
+                rate_internship INTEGER DEFAULT 0,
+                rate_hardware INTEGER DEFAULT 0,
+                rate_software INTEGER DEFAULT 0,
+                rate_internet INTEGER DEFAULT 0,
+                rate_lab_env INTEGER DEFAULT 0,
+                overall_avg NUMERIC(3,2) DEFAULT 0.0,
+                useful_tech TEXT,
+                desired_tech TEXT,
+                grievance TEXT,
+                employment_status VARCHAR(100),
+                confidence VARCHAR(100),
+                guest_speaker VARCHAR(100),
+                breakthrough TEXT,
+                restructure_suggestion TEXT,
+                legacy_tip TEXT,
+                sentiment_label VARCHAR(20) DEFAULT 'Neutral',
+                sentiment_score NUMERIC(3,2) DEFAULT 0.50,
+                raw_responses JSONB,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
         await pool.query(`
             CREATE TABLE IF NOT EXISTS admin_users (
                 id SERIAL PRIMARY KEY,
@@ -297,8 +419,11 @@ async function initDb() {
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
         `);
+
+        // Ensure baseline alumni dataset is seeded into database
+        await seedTranscriptsIfEmpty();
     } catch (err) {
-        console.warn('Admin DB initialization note:', err.message);
+        console.warn('Database initialization note:', err.message);
     }
 }
 initDb();

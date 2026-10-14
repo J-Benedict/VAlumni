@@ -91,14 +91,14 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
         logger.info(f"Transcribing audio file: {temp_path} ({len(content)} bytes)")
 
-        # Run faster-whisper transcription
+        # Run faster-whisper transcription with multilingual auto-detection (English, Tagalog, Taglish)
         segments, info = model.transcribe(
             temp_path,
             beam_size=5,
             initial_prompt=DOMAIN_INITIAL_PROMPT,
             vad_filter=True, # Filter out background silence
             vad_parameters=dict(min_silence_duration_ms=500),
-            language="en" # Optimal for Philippine English & computing exit interviews
+            language=None # Auto-detects English vs Tagalog/Filipino vs Taglish
         )
 
         transcript_segments = []
@@ -127,6 +127,40 @@ async def transcribe_audio(file: UploadFile = File(...)):
             except Exception:
                 pass
 
+import edge_tts
+from fastapi.responses import Response
+
+@app.post("/tts")
+async def generate_speech(payload: dict):
+    """
+    Generate natural human neural audio for Program Head using Azure Neural voices.
+    Supports authentic Filipino and Philippine English (AngeloNeural, JamesNeural, BlessicaNeural).
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    # Remove any markdown formatting before synthesis
+    import re
+    cleaned_text = re.sub(r'[*_#`~]', '', text).strip()
+
+    voice = payload.get("voice") or "fil-PH-AngeloNeural"
+    rate = payload.get("rate") or "+0%"
+    pitch = payload.get("pitch") or "-2Hz"
+
+    try:
+        communicate = edge_tts.Communicate(cleaned_text, voice, rate=rate, pitch=pitch)
+        audio_chunks = bytearray()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_chunks.extend(chunk["data"])
+
+        return Response(content=bytes(audio_chunks), media_type="audio/mpeg")
+    except Exception as err:
+        logger.error(f"TTS generation error: {err}")
+        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(err)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
+

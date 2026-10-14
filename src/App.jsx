@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import LandingPage from './components/LandingPage';
-import VoiceInterview from './components/VoiceInterview';
+import ConversationalInterview from './components/ConversationalInterview';
 import AdminPortal from './components/AdminPortal';
 import AdminLoginModal from './components/AdminLoginModal';
 
@@ -58,11 +58,10 @@ export default function App() {
                 />
             )}
 
-            {/* View 2: Active Voice Interview Session */}
+            {/* View 2: Active Conversational Character.ai Voice Interview Session */}
             {view === 'interview' && (
-                <div className="min-h-screen bg-cloud-gradient flex flex-col">
-                    <VoiceInterview
-                        initialStage="survey"
+                <div className="h-screen max-h-screen overflow-hidden flex flex-col">
+                    <ConversationalInterview
                         onInterviewComplete={handleInterviewComplete}
                         onExitToLanding={() => navigateTo('landing')}
                     />
