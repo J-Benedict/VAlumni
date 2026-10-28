@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Lock, User, KeyRound, AlertCircle, X, ShieldCheck, Loader2 } from 'lucide-react';
 
 export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
@@ -6,6 +6,52 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
     const [password, setPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
+    const [isInputReady, setIsInputReady] = useState(false);
+    const usernameRef = useRef(null);
+
+    const clearFields = useCallback(() => {
+        setUsername('');
+        setPassword('');
+        setErrorMsg('');
+        setIsLoading(false);
+        setIsInputReady(false);
+    }, []);
+
+    // Always wipe any typed credentials whenever the modal opens, closes, or unmounts,
+    // and briefly hold readOnly on mount so browser password autofill cannot pre-populate saved inputs.
+    useEffect(() => {
+        clearFields();
+        if (!isOpen) return undefined;
+
+        const timer = setTimeout(() => {
+            setUsername('');
+            setPassword('');
+            setIsInputReady(true);
+            usernameRef.current?.focus();
+        }, 120);
+
+        return () => {
+            clearTimeout(timer);
+            clearFields();
+        };
+    }, [isOpen, clearFields]);
+
+    const handleClose = useCallback(() => {
+        clearFields();
+        if (onClose) onClose();
+    }, [clearFields, onClose]);
+
+    // Support Escape key to close and clear inputs
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                handleClose();
+            }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isOpen, handleClose]);
 
     if (!isOpen) return null;
 
@@ -13,7 +59,10 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
         e.preventDefault();
         setErrorMsg('');
 
-        if (!username.trim() || !password) {
+        const submittedUsername = username.trim();
+        const submittedPassword = password;
+
+        if (!submittedUsername || !submittedPassword) {
             setErrorMsg('Please enter both Admin username and password.');
             return;
         }
@@ -24,39 +73,45 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    username: username.trim(),
-                    password: password
+                    username: submittedUsername,
+                    password: submittedPassword
                 })
             });
 
             const data = await res.json();
             if (res.ok && data.success) {
-                // Successful login
+                // Immediately wipe credentials before transitioning to Admin Portal
+                clearFields();
                 if (onLoginSuccess) {
                     onLoginSuccess(data.user);
                 }
-                onClose();
+                if (onClose) onClose();
             } else {
+                setPassword('');
                 setErrorMsg(data.message || 'Invalid username or password.');
+                setIsLoading(false);
             }
         } catch (err) {
             console.error('Login request failed:', err);
             setErrorMsg('Could not connect to authentication server. Please check your backend.');
-        } finally {
             setIsLoading(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+        <div
+            onClick={handleClose}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200"
+        >
             <div 
                 className="relative w-full max-w-md rounded-3xl bg-white/95 backdrop-blur-xl p-8 border border-orange-200/80 shadow-2xl shadow-orange-950/20 text-slate-800 space-y-6"
                 onClick={(e) => e.stopPropagation()}
             >
                 {/* Close Button */}
                 <button
-                    onClick={onClose}
-                    className="absolute top-5 right-5 p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-orange-50 transition-colors"
+                    type="button"
+                    onClick={handleClose}
+                    className="absolute top-5 right-5 p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-orange-50 transition-colors cursor-pointer"
                     title="Close Login Modal"
                 >
                     <X className="w-5 h-5" />
@@ -82,19 +137,26 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
                 )}
 
                 {/* Login Form */}
-                <form onSubmit={handleSubmit} className="space-y-4 font-sans text-sm">
+                <form onSubmit={handleSubmit} autoComplete="off" className="space-y-4 font-sans text-sm">
                     <div className="space-y-1.5">
                         <label className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
                             <User className="w-3.5 h-3.5 text-orange-600" />
                             Admin Username
                         </label>
                         <input
+                            ref={usernameRef}
                             type="text"
+                            name="valumni_portal_user"
                             required
-                            autoFocus
+                            readOnly={!isInputReady}
+                            onPointerDown={() => setIsInputReady(true)}
+                            onKeyDown={() => setIsInputReady(true)}
+                            autoComplete="off"
+                            data-lpignore="true"
+                            data-form-type="other"
                             value={username}
                             onChange={(e) => setUsername(e.target.value)}
-                            placeholder="e.g. admin"
+                            placeholder="Enter admin username"
                             className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500 transition-all"
                         />
                     </div>
@@ -106,7 +168,14 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
                         </label>
                         <input
                             type="password"
+                            name="valumni_portal_secret"
                             required
+                            readOnly={!isInputReady}
+                            onPointerDown={() => setIsInputReady(true)}
+                            onKeyDown={() => setIsInputReady(true)}
+                            autoComplete="new-password"
+                            data-lpignore="true"
+                            data-form-type="other"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="••••••••"

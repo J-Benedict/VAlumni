@@ -3,13 +3,21 @@ import philippineNames from '../data/philippineNames.json';
 const POSITIVE_KEYWORDS = [
     'great', 'rewarding', 'excellent', 'useful', 'helpful', 'satisfied', 'confident',
     'debugged', 'breakthrough', 'deploy', 'deployed', 'learned', 'mastered', 'solid',
-    'supportive', 'valuable', 'enjoyed', 'passed', 'success', 'good', 'improved', 'love'
+    'supportive', 'valuable', 'enjoyed', 'passed', 'success', 'good', 'improved', 'love',
+    'best', 'recommend', 'appreciate', 'proud', 'smooth', 'easy', 'productive',
+    // Filipino & Taglish positive lexicons
+    'magaling', 'mahusay', 'masaya', 'nakatulong', 'ayos', 'sulit', 'madali',
+    'pasado', 'nakapasa', 'ganda', 'maganda', 'astig', 'nakakaproud', 'natuto', 'nagustuhan'
 ];
 
 const NEGATIVE_KEYWORDS = [
     'slow', 'lag', 'outdated', 'malfunction', 'broken', 'issue', 'grievance', 'bottleneck',
     'struggled', 'frustrating', 'hard', 'difficult', 'bug', 'leak', 'hot', 'aircon',
-    'restricted', 'limitation', 'lack', 'insufficient', 'poor', 'cramming', 'delay'
+    'restricted', 'limitation', 'lack', 'insufficient', 'poor', 'cramming', 'delay',
+    'failed', 'horrible', 'annoying', 'bad', 'unfair', 'crash',
+    // Filipino & Taglish negative lexicons
+    'hirap', 'mahirap', 'bagsak', 'sira', 'luma', 'mabagal', 'init', 'mainit',
+    'pangit', 'wala', 'bulok', 'sabog', 'nakakainis', 'bitin', 'magulo'
 ];
 
 export function analyzeSentiment(text) {
@@ -365,8 +373,8 @@ export const LSPU_SURVEY_STRUCTURE = [
             {
                 id: "demo_studentid",
                 type: "voice_text",
-                question: "What is your Student ID number?",
-                promptHint: "e.g., 0123-0246"
+                question: "If possible, can you also share your Student ID if you still remember it? (Optional)",
+                promptHint: "e.g., 0123-0246, or say 'Skip' / 'I don't remember'"
             },
             {
                 id: "demo_program",

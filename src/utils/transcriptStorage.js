@@ -77,6 +77,35 @@ export function buildTranscriptRecord(responses, allQuestions) {
 }
 
 /**
+ * Directly save a structured interview transcript record to PostgreSQL DB and localStorage.
+ */
+export async function saveInterviewTranscriptRecord(record) {
+    if (!record || !record.id) return null;
+
+    // 1. Save locally as fallback
+    saveInterviewTranscriptLocal(record);
+
+    // 2. Post to PostgreSQL API Server
+    try {
+        const res = await fetch('/api/transcripts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(record)
+        });
+
+        if (!res.ok) {
+            console.warn('PostgreSQL API save returned error status:', res.status);
+        } else {
+            console.log('Successfully persisted interview transcript record to PostgreSQL DB.');
+        }
+    } catch (e) {
+        console.warn('Failed to reach PostgreSQL API server. Saved to localStorage fallback.', e);
+    }
+
+    return record;
+}
+
+/**
  * Save interview transcript to PostgreSQL database API with localStorage fallback.
  */
 export async function saveInterviewTranscriptToDB(responses, allQuestions) {

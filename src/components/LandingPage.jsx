@@ -1,11 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import ccsLogo from '../../assets/ccs_logo.png';
 import lspuLogo from '../../assets/lspu_logo.png';
 import { DATA_PRIVACY_TEXT } from '../services/aiService';
+import { ttsService } from '../services/ttsService';
+import { INTERVIEW_DOMAINS } from '../services/conversationalAiService';
 import { ShieldCheck, CheckCircle, ArrowRight, FileText } from 'lucide-react';
 
 export default function LandingPage({ onStartSession, onOpenAdminLogin }) {
     const [agreedToTos, setAgreedToTos] = useState(true);
+
+    // Pre-synthesize the Program Head's opening greeting so voice + text start instantly on session launch
+    useEffect(() => {
+        const preferredVoice = localStorage.getItem('valumni_selected_tts_voice') || 'fil-PH-AngeloNeural';
+        ttsService.prefetch(INTERVIEW_DOMAINS[0]?.starterMessage, preferredVoice);
+    }, []);
 
     return (
         <div className="h-screen max-h-screen overflow-hidden flex flex-col bg-cloud-gradient text-slate-800 relative selection:bg-orange-500 selection:text-white">

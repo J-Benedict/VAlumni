@@ -120,3 +120,43 @@
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
 }
 
+
+/* Synchronized TTS Word-by-Word Flow Animation */
+@keyframes ttsWordReveal {
+  0% {
+    opacity: 0;
+    transform: translateY(3px);
+    color: #93c5fd;
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(0);
+    color: #dbeafe;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    color: inherit;
+  }
+}
+
+.tts-word-flow {
+  display: inline;
+  animation: ttsWordReveal 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+@keyframes ttsCaretBlink {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.2; }
+}
+
+.tts-speaking-caret {
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -2px;
+  border-radius: 2px;
+  background-color: #60a5fa;
+  animation: ttsCaretBlink 0.7s ease-in-out infinite;
+}

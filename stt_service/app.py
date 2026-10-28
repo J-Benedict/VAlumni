@@ -53,13 +53,14 @@ except Exception as e:
     model = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8")
     logger.info("Whisper model loaded successfully on CPU fallback.")
 
-# Domain prompt primes Whisper with LSPU CCS context, Philippine terminology, computing acronyms, and local surnames
+# Domain prompt primes Whisper with LSPU CCS context, Taglish code-switching style, computing acronyms, and local surnames.
+# The Taglish example sentence teaches Whisper to transcribe mixed Filipino/English verbatim instead of translating it.
 DOMAIN_INITIAL_PROMPT = (
-    "Laguna State Polytechnic University, LSPU, College of Computer Studies, CCS, "
-    "Alumni Exit Interview, BSIT, BSCS, Capstone Project, Software Engineering, Python, JavaScript, Java, "
-    "Philippine and Laguna surnames: Coronacion, Urrea, Dela Cruz, Santos, Reyes, Ramos, Mendoza, "
-    "Gonzales, Hornilla, Dimaculangan, Catapang, Agoncillo, Macaraig, Quemada, Tolentino, Alipon, "
-    "Carait, Eleazar, Reventar, Alimagno, Montecillo, Peñaranda, Peñaloza, Bathan, Bautista, Villanueva."
+    "Opo, ako po si Juan Dela Cruz, graduate po ng BSIT sa LSPU College of Computer Studies. "
+    "Yung capstone project namin, medyo mahirap pero sobrang rewarding. "
+    "Laguna State Polytechnic University, LSPU, CCS, BSIT, BSCS, Capstone, Python, JavaScript, Java, Wi-Fi, "
+    "Coronacion, Urrea, Santos, Reyes, Ramos, Mendoza, Gonzales, Hornilla, Dimaculangan, Catapang, "
+    "Agoncillo, Macaraig, Tolentino, Eleazar, Montecillo, Peñaranda, Bautista, Villanueva."
 )
 
 @app.get("/health")
@@ -96,6 +97,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
             temp_path,
             beam_size=5,
             initial_prompt=DOMAIN_INITIAL_PROMPT,
+            condition_on_previous_text=False, # Prevents repetition loops / hallucinated carry-over
             vad_filter=True, # Filter out background silence
             vad_parameters=dict(min_silence_duration_ms=500),
             language=None # Auto-detects English vs Tagalog/Filipino vs Taglish
@@ -103,6 +105,9 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
         transcript_segments = []
         for segment in segments:
+            # Skip segments Whisper itself flags as probably not speech (common source of phantom text)
+            if getattr(segment, "no_speech_prob", 0) > 0.6 and getattr(segment, "avg_logprob", 0) < -1.0:
+                continue
             transcript_segments.append(segment.text.strip())
 
         full_transcript = " ".join(transcript_segments).strip()
@@ -145,8 +150,8 @@ async def generate_speech(payload: dict):
     cleaned_text = re.sub(r'[*_#`~]', '', text).strip()
 
     voice = payload.get("voice") or "fil-PH-AngeloNeural"
-    rate = payload.get("rate") or "+0%"
-    pitch = payload.get("pitch") or "-2Hz"
+    rate = payload.get("rate") or "-4%"
+    pitch = payload.get("pitch") or "+0Hz"
 
     try:
         communicate = edge_tts.Communicate(cleaned_text, voice, rate=rate, pitch=pitch)
@@ -162,5 +167,5 @@ async def generate_speech(payload: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 

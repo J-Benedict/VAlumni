@@ -6,7 +6,8 @@
   "scripts": {
     "dev:client": "vite",
     "dev:server": "npm --prefix server run dev",
-    "dev": "concurrently -k -n \"CLIENT,SERVER\" -c \"cyan,yellow\" \"npm run dev:client\" \"npm run dev:server\"",
+    "dev:stt": "py stt_service/app.py",
+    "dev": "concurrently -n \"CLIENT,SERVER,STT\" -c \"cyan,yellow,magenta\" \"npm run dev:client\" \"npm run dev:server\" \"npm run dev:stt\"",
     "build": "vite build",
     "preview": "vite preview"
   },

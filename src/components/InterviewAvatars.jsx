@@ -344,7 +344,7 @@ export function IntervieweeAvatar({ isListening = false, volumeLevel = 0, size =
                 Interviewee
             </span>
             <span className="text-[11px] font-mono text-emerald-400">
-                LSPU CCS Graduate
+                LSPU CCS Alumni
             </span>
         </div>
     );

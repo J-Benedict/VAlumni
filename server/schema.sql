@@ -68,6 +68,6 @@ CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username);
 
 -- Example Query: Manually insert or update an admin account
 -- INSERT INTO admin_users (username, password) 
--- VALUES ('admin', 'admin123')
+-- VALUES ('SQAdmin23-26-27', 'CCSAlumni_Admin%092627')
 -- ON CONFLICT (username) DO UPDATE SET password = EXCLUDED.password;
 

@@ -53,8 +53,9 @@ export async function seedTranscriptsIfEmpty() {
                     $27, $28, $29
                 );
             `;
-            const sentimentLabel = r[16] >= 4.0 ? 'Positive' : (r[16] >= 3.5 ? 'Neutral' : 'Negative');
-            const sentimentScore = r[16] >= 4.0 ? 0.85 : (r[16] >= 3.5 ? 0.55 : 0.35);
+            const overallRating = parseFloat(r[14]) || 3.8;
+            const sentimentLabel = overallRating >= 4.0 ? 'Positive' : (overallRating >= 3.5 ? 'Neutral' : 'Negative');
+            const sentimentScore = overallRating >= 4.0 ? 0.85 : (overallRating >= 3.5 ? 0.60 : 0.35);
 
             await query(insertSql, [
                 id, r[0], 'historical_dataset', r[1], r[2], r[3], r[4], r[5],

@@ -69,78 +69,108 @@ app.post('/api/stt/transcribe', upload.single('audio'), async (req, res) => {
     }
 });
 
-// POST /api/tts/generate - Natural Human Neural TTS Generation (AngeloNeural / JamesNeural)
+// POST /api/tts/generate - Native Neural TTS (Microsoft Edge voices: Angelo, Blessica, James, Rosa)
+const ALLOWED_TTS_VOICES = new Set([
+    'fil-PH-AngeloNeural',
+    'fil-PH-BlessicaNeural',
+    'en-PH-JamesNeural',
+    'en-PH-RosaNeural'
+]);
+const TTS_CACHE_LIMIT = 200;
+const ttsCache = new Map(); // key -> Buffer (simple LRU)
+
+function cacheTts(key, buffer) {
+    if (ttsCache.has(key)) ttsCache.delete(key);
+    ttsCache.set(key, buffer);
+    if (ttsCache.size > TTS_CACHE_LIMIT) {
+        ttsCache.delete(ttsCache.keys().next().value);
+    }
+}
+
+function synthesizeWithEdgeCli(text, voice) {
+    return new Promise(async (resolve, reject) => {
+        const id = `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const tmpFile = path.join(os.tmpdir(), `tts_${id}.mp3`);
+        const textFile = path.join(os.tmpdir(), `tts_${id}.txt`);
+        try {
+            await fs.promises.writeFile(textFile, text, 'utf8');
+        } catch (e) {
+            return reject(e);
+        }
+
+        // Voice is whitelisted above; text is passed via file (never via the shell).
+        exec(
+            `py -m edge_tts --voice "${voice}" --rate=-4% --file "${textFile}" --write-media "${tmpFile}"`,
+            { timeout: 30000 },
+            async (error) => {
+                try {
+                    if (fs.existsSync(textFile)) await fs.promises.unlink(textFile);
+                    if (error || !fs.existsSync(tmpFile)) {
+                        return reject(error || new Error('edge-tts produced no audio'));
+                    }
+                    const audioBuffer = await fs.promises.readFile(tmpFile);
+                    await fs.promises.unlink(tmpFile);
+                    resolve(audioBuffer);
+                } catch (cleanupErr) {
+                    reject(cleanupErr);
+                }
+            }
+        );
+    });
+}
+
 app.post('/api/tts/generate', async (req, res) => {
     try {
-        const { text, voice = 'fil-PH-AngeloNeural' } = req.body || {};
+        const { text } = req.body || {};
+        const voice = ALLOWED_TTS_VOICES.has(req.body?.voice) ? req.body.voice : 'fil-PH-AngeloNeural';
         if (!text || !text.trim()) {
             return res.status(400).json({ error: 'Text payload is required.' });
         }
 
-        // Clean any markdown formatting and phonetically expand acronyms
-        let cleanText = text.replace(/[*_#`~]/g, '')
-            .replace(/\b(LSPU|L\.S\.P\.U\.|L\.\s*S\.\s*P\.\s*U\.)\b/gi, 'L-S-P-U')
-            .replace(/\b(CCS|C\.C\.S\.|C\.\s*C\.\s*S\.)\b/gi, 'C-C-S')
-            .replace(/\b(BSIT|B\.S\.I\.T\.)\b/gi, 'B-S-I-T')
-            .replace(/\b(BSCS|B\.S\.C\.S\.)\b/gi, 'B-S-C-S')
-            .replace(/\bStudent\s+(ID|I\.D\.|I\.\s*D\.)\b/gi, 'Student I-D')
-            .replace(/\b(ID|I\.D\.)\s+number\b/gi, 'I-D number')
-            .replace(/\b(ID|I\.D\.)\b/g, 'I-D')
-            .replace(/\bIT\b/g, 'I-T')
-            .replace(/\bI\.T\.\b/gi, 'I-T')
-            .replace(/\b(AI|A\.I\.)\b/g, 'A-I')
-            .replace(/\bUI\/UX\b/gi, 'U-I U-X')
-            .replace(/\bSQL\b/gi, 'S-Q-L')
-            .replace(/\bAWS\b/gi, 'A-W-S')
-            .replace(/\bPHP\b/gi, 'P-H-P')
-            .replace(/\bWi-?Fi\b/gi, 'Wai-Fai')
-            .trim();
+        // Text is already phonetically pre-processed by the client (acronyms -> letter-by-letter).
+        const cleanText = text.replace(/[*_#`~]/g, '').trim().slice(0, 3000);
+        const cacheKey = `${voice}:${cleanText}`;
 
-        // 1. Try FastAPI microservice first
+        if (ttsCache.has(cacheKey)) {
+            res.setHeader('Content-Type', 'audio/mpeg');
+            res.setHeader('X-TTS-Cache', 'HIT');
+            return res.send(ttsCache.get(cacheKey));
+        }
+
+        // 1. In-process synthesis via the Python microservice (fastest, if running)
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 1800);
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
             const resp = await fetch(`${STT_SERVICE_URL}/tts`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: cleanText, voice }),
+                body: JSON.stringify({ text: cleanText, voice, rate: '-4%', pitch: '+0Hz' }),
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
 
             if (resp.ok) {
-                const buffer = await resp.arrayBuffer();
-                res.setHeader('Content-Type', 'audio/mpeg');
-                return res.send(Buffer.from(buffer));
+                const buffer = Buffer.from(await resp.arrayBuffer());
+                if (buffer.length > 500) {
+                    cacheTts(cacheKey, buffer);
+                    res.setHeader('Content-Type', 'audio/mpeg');
+                    return res.send(buffer);
+                }
             }
         } catch (e) {
-            // Microservice not available; fall through to Python CLI fallback
+            // Microservice not running; fall through to CLI
         }
 
-        // 2. Direct Python CLI execution fallback (using edge-tts)
-        const tmpFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
-        const textFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.txt`);
-        await fs.promises.writeFile(textFile, cleanText, 'utf8');
-
-        exec(`py -m edge_tts --voice "${voice}" --file "${textFile}" --write-media "${tmpFile}"`, async (error) => {
-            try {
-                if (fs.existsSync(textFile)) await fs.promises.unlink(textFile);
-                if (error || !fs.existsSync(tmpFile)) {
-                    console.error('Python edge-tts fallback error:', error);
-                    return res.status(500).json({ error: 'Failed to generate neural audio.' });
-                }
-
-                const audioBuffer = await fs.promises.readFile(tmpFile);
-                await fs.promises.unlink(tmpFile);
-
-                res.setHeader('Content-Type', 'audio/mpeg');
-                res.setHeader('Cache-Control', 'public, max-age=3600');
-                return res.send(audioBuffer);
-            } catch (cleanupErr) {
-                console.error('TTS cleanup error:', cleanupErr);
-                return res.status(500).json({ error: 'TTS processing error' });
-            }
-        });
+        // 2. edge-tts CLI fallback
+        try {
+            const audioBuffer = await synthesizeWithEdgeCli(cleanText, voice);
+            cacheTts(cacheKey, audioBuffer);
+            res.setHeader('Content-Type', 'audio/mpeg');
+            return res.send(audioBuffer);
+        } catch (cliErr) {
+            console.error('Neural TTS failed (edge-tts). If this is a 403, run: py -m pip install -U edge-tts\n', cliErr?.message || cliErr);
+            return res.status(502).json({ error: 'Neural TTS unavailable. Update edge-tts: py -m pip install -U edge-tts' });
+        }
     } catch (err) {
         console.error('Error generating neural speech:', err);
         return res.status(500).json({ error: 'TTS generation server error' });
@@ -231,7 +261,7 @@ app.get('/api/transcripts', async (req, res) => {
                 label: r.sentiment_label,
                 score: Number(r.sentiment_score)
             },
-            rawResponses: r.rawResponses
+            rawResponses: typeof r.rawResponses === 'string' ? (() => { try { return JSON.parse(r.rawResponses); } catch(e) { return r.rawResponses; } })() : (r.rawResponses || {})
         }));
 
         res.json(formatted);
@@ -361,11 +391,11 @@ app.post('/api/admin/login', async (req, res) => {
     } catch (err) {
         console.error('Error during admin login:', err);
         // Dev fallback if PostgreSQL service is offline:
-        if (username.toLowerCase() === 'admin' && password === 'admin123') {
-            console.log('⚠️ [DEV FALLBACK] PostgreSQL offline: Authenticated default admin/admin123 for local UI evaluation.');
+        if (username.toLowerCase() === 'sqadmin23-26-27' && password === 'CCSAlumni_Admin%092627') {
+            console.log('⚠️ [DEV FALLBACK] PostgreSQL offline: Authenticated SQAdmin23-26-27 for local UI evaluation.');
             return res.json({
                 success: true,
-                user: { id: 1, username: 'admin' },
+                user: { id: 1, username: 'SQAdmin23-26-27' },
                 isDevFallback: true
             });
         }
@@ -420,7 +450,9 @@ async function initDb() {
             );
         `);
 
-        // Ensure baseline alumni dataset is seeded into database
+        // Purge legacy default account and ensure secured admin account is seeded
+        await pool.query('DELETE FROM admin_users WHERE LOWER(username) = $1;', ['admin']);
+        await pool.query('INSERT INTO admin_users (username, password) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING;', ['SQAdmin23-26-27', 'CCSAlumni_Admin%092627']);
         await seedTranscriptsIfEmpty();
     } catch (err) {
         console.warn('Database initialization note:', err.message);

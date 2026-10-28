@@ -77,10 +77,13 @@ function initSqliteSchema() {
             );
         `);
 
-        // Seed default admin account in SQLite if not present
+        // Ensure legacy default account is purged
+        sqliteDb.run(`DELETE FROM admin_users WHERE LOWER(username) = 'admin'`);
+
+        // Seed secure admin account in SQLite if not present
         sqliteDb.run(`
-            INSERT OR IGNORE INTO admin_users (id, username, password)
-            VALUES (1, 'admin', 'admin123')
+            INSERT OR IGNORE INTO admin_users (username, password)
+            VALUES ('SQAdmin23-26-27', 'CCSAlumni_Admin%092627')
         `);
     });
 }

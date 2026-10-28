@@ -148,7 +148,13 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
         if (streamRef.current && streamRef.current.active) return;
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const savedDevId = typeof localStorage !== 'undefined' ? localStorage.getItem('valumni_selected_audio_device') : null;
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: savedDevId ? { deviceId: { exact: savedDevId } } : true });
+            } catch (devErr) {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
             streamRef.current = stream;
 
             // Start MediaRecorder for Whisper STT
