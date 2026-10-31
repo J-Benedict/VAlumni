@@ -28,3 +28,6 @@ pyrefly.toml
 *.sqlite
 *.sqlite3
 server/data/
+
+# Cloudflare Tunnel Binary
+cloudflared.exe

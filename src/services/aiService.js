@@ -1,4 +1,5 @@
 import philippineNames from '../data/philippineNames.json';
+import { refineNameSpan } from '../utils/transcriptRefiner';
 
 const POSITIVE_KEYWORDS = [
     'great', 'rewarding', 'excellent', 'useful', 'helpful', 'satisfied', 'confident',
@@ -319,27 +320,21 @@ export function correctFilipinoName(rawText, fieldType = 'lastname') {
         return firstLetter ? firstLetter.toUpperCase() + '.' : '';
     }
 
-    // Apply phonetic map corrections (for both firstname and lastname)
+    // Apply phonetic skeleton + philippineNames.json lexicon alignment
     FILIPINO_PHONETIC_MAP.forEach(({ pattern, replacement }) => {
         cleaned = cleaned.replace(pattern, replacement);
     });
 
     if (fieldType === 'firstname') {
-        return cleaned.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ');
+        return refineNameSpan(cleaned, 'firstname');
+    }
+
+    if (fieldType === 'fullname') {
+        return refineNameSpan(cleaned, 'fullname');
     }
 
     // Default: Last Name / Surname correction
-    cleaned = cleaned.split(/\s+/).map(word => {
-        if (word.length === 2 && word.endsWith('.')) {
-            return word.toUpperCase();
-        }
-        const match = COMMON_FILIPINO_SURNAMES.find(s => s.toLowerCase() === word.toLowerCase());
-        if (match) return match;
-
-        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    }).join(' ');
-
-    return cleaned;
+    return refineNameSpan(cleaned, 'lastname');
 }
 
 

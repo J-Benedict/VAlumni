@@ -1,23 +1,118 @@
 /**
- * Real-time Web Audio API DSP Noise Reduction & Voice Activity Detection (VAD) Pipeline.
- * 
- * Cleaning Process:
- * 1. Hardware-level constraints: echoCancellation, noiseSuppression, autoGainControl
- * 2. High-Pass BiquadFilter (85Hz, Q=0.7): Eliminates table bumps, low-frequency hum, air conditioner rumble
- * 3. Low-Pass BiquadFilter (7500Hz, Q=0.7): Cuts high-frequency electronic hiss & coil whine
- * 4. DynamicsCompressor: Normalizes speech dynamics (boosts quiet words, prevents clipping)
- * 5. AnalyserNode: Extracts speech band RMS energy (300Hz-3400Hz) for precise VAD silence detection
- * 6. MediaStreamDestination: Outputs cleaned audio stream directly into MediaRecorder
+ * Studio-Grade Real-Time Web Audio DSP Voice Cleaner & Lossless 16 kHz WAV Capture Pipeline.
+ *
+ * Works in tandem with the Python server-side VoiceCleaner + faster-whisper Large-v3-Turbo:
+ * 1. Hardware-level constraints: echoCancellation, noiseSuppression, autoGainControl, mono capture
+ * 2. High-Pass Butterworth Filter (80 Hz, Q=0.707): Removes mic bumps, wind pops, & fan rumble
+ * 3. 60 Hz & 120 Hz Notch Filters (Q=12): Surgically removes Philippine AC mains power hum
+ * 4. Low-Mid Mud Cut (220 Hz, -2.5 dB): Clears boxy desk/room reflections masking F1 formants
+ * 5. Consonant & Sibilant Presence Boost (2850 Hz, +2.5 dB): Sharpens t/k/p/s/c/f/h articulation
+ * 6. Anti-Hiss Low-Pass Filter (7800 Hz, Q=0.707): Clean Nyquist ceiling for 16 kHz Whisper ASR
+ * 7. Transparent Peak Limiter (-8 dB, 2.5:1): Prevents clipping without pumping room noise
+ * 8. 600 ms Pre-Speech Ring Buffer + Lossless 16 kHz 16-bit Mono PCM WAV Encoder:
+ *    Eliminates lossy 64kbps Opus sibilant smearing and preserves soft initial consonants.
  */
+
+const TARGET_WHISPER_SAMPLE_RATE = 16000;
+
+/**
+ * Resamples mono Float32 PCM audio to 16,000 Hz using browser C++ OfflineAudioContext
+ * (with anti-aliased linear interpolation fallback) and encodes a 16-bit PCM RIFF WAV Blob.
+ */
+export async function encodeFloat32ToWav16k(samples, sourceSampleRate) {
+    if (!samples || samples.length === 0) {
+        return new Blob([], { type: 'audio/wav' });
+    }
+
+    let resampled = samples;
+    const targetLength = Math.max(1, Math.round((samples.length * TARGET_WHISPER_SAMPLE_RATE) / sourceSampleRate));
+
+    if (sourceSampleRate !== TARGET_WHISPER_SAMPLE_RATE) {
+        const OfflineCtx = typeof window !== 'undefined' && (window.OfflineAudioContext || window.webkitOfflineAudioContext);
+        if (OfflineCtx) {
+            try {
+                const offlineCtx = new OfflineCtx(1, targetLength, TARGET_WHISPER_SAMPLE_RATE);
+                const audioBuf = offlineCtx.createBuffer(1, samples.length, sourceSampleRate);
+                audioBuf.copyToChannel(samples, 0);
+                const bufSource = offlineCtx.createBufferSource();
+                bufSource.buffer = audioBuf;
+                bufSource.connect(offlineCtx.destination);
+                bufSource.start(0);
+                const rendered = await offlineCtx.startRendering();
+                resampled = rendered.getChannelData(0);
+            } catch (e) {
+                resampled = linearResample(samples, sourceSampleRate, TARGET_WHISPER_SAMPLE_RATE);
+            }
+        } else {
+            resampled = linearResample(samples, sourceSampleRate, TARGET_WHISPER_SAMPLE_RATE);
+        }
+    }
+
+    // Encode standard 44-byte RIFF WAVE header + 16-bit signed little-endian PCM payload
+    const numSamples = resampled.length;
+    const dataBytes = numSamples * 2;
+    const buffer = new ArrayBuffer(44 + dataBytes);
+    const view = new DataView(buffer);
+
+    writeAscii(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeAscii(view, 8, 'WAVE');
+    writeAscii(view, 12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM chunk size
+    view.setUint16(20, 1, true);  // AudioFormat = 1 (Linear PCM)
+    view.setUint16(22, 1, true);  // NumChannels = 1 (Mono)
+    view.setUint32(24, TARGET_WHISPER_SAMPLE_RATE, true);
+    view.setUint32(28, TARGET_WHISPER_SAMPLE_RATE * 2, true); // ByteRate
+    view.setUint16(32, 2, true);  // BlockAlign
+    view.setUint16(34, 16, true); // BitsPerSample = 16
+    writeAscii(view, 36, 'data');
+    view.setUint32(40, dataBytes, true);
+
+    let offset = 44;
+    for (let i = 0; i < numSamples; i++) {
+        const clamped = Math.max(-1, Math.min(1, resampled[i]));
+        view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF, true);
+        offset += 2;
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function writeAscii(view, offset, str) {
+    for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+    }
+}
+
+function linearResample(input, srcRate, dstRate) {
+    const outLength = Math.max(1, Math.round((input.length * dstRate) / srcRate));
+    const output = new Float32Array(outLength);
+    const ratio = (input.length - 1) / Math.max(1, outLength - 1);
+    for (let i = 0; i < outLength; i++) {
+        const pos = i * ratio;
+        const idx = Math.floor(pos);
+        const frac = pos - idx;
+        const s0 = input[idx] || 0;
+        const s1 = input[Math.min(idx + 1, input.length - 1)] || 0;
+        output[i] = s0 + frac * (s1 - s0);
+    }
+    return output;
+}
 
 export class AudioCleanerPipeline {
     constructor(options = {}) {
         this.options = {
-            silenceTimeoutMs: options.silenceTimeoutMs || 2600, // Ms of silence to trigger end-of-speech
-            speechThreshold: options.speechThreshold || 16,     // Minimum volume level (0-100) to mark speech start
-            minSpeechDurationMs: options.minSpeechDurationMs || 800, // Minimum speech window before silence triggers
+            silenceTimeoutMs: options.silenceTimeoutMs || 1550,
+            longTurnSilenceTimeoutMs: options.longTurnSilenceTimeoutMs || 1950,
+            speechThreshold: options.speechThreshold || 15,
+            minSpeechDurationMs: options.minSpeechDurationMs || 650,
+            preRollMs: options.preRollMs || 600,
+            tailPadMs: options.tailPadMs || 500,
+            chunkMinDurationSec: options.chunkMinDurationSec || 7.5,
+            chunkSilenceSplitMs: options.chunkSilenceSplitMs || 520,
             onSpeechStart: options.onSpeechStart || (() => {}),
             onSpeechVolume: options.onSpeechVolume || (() => {}),
+            onSpeechChunk: options.onSpeechChunk || null,
             onSilenceDetected: options.onSilenceDetected || (() => {}),
             ...options
         };
@@ -26,10 +121,24 @@ export class AudioCleanerPipeline {
         this.mediaStream = null;
         this.cleanStream = null;
         this.analyser = null;
+        this.pcmProcessor = null;
+        this.silentSink = null;
         this.mediaRecorder = null;
         this.recorderMimeType = 'audio/webm';
         this.recordedChunks = [];
         this.activeDeviceLabel = '';
+
+        // Lossless PCM capture & breath-aligned background chunk streaming state
+        this.preRollChunks = [];
+        this.preRollSampleCount = 0;
+        this.pcmChunks = [];
+        this.pcmSampleCount = 0;
+        this.lastVoicedChunkIndex = -1;
+        this.hasVoicedInCurrentSegment = false;
+        this.voicedFramesInCurrentSegment = 0;
+        this.segmentChunkIndex = 0;
+        this.activeFlushPromise = null;
+        this.listenSessionId = 0;
 
         this.hasSpoken = false;
         this.isCurrentlySpeaking = false;
@@ -45,20 +154,22 @@ export class AudioCleanerPipeline {
     }
 
     /**
-     * Initializes the microphone and builds the DSP audio filter graph.
+     * Initializes the microphone and builds the 7-stage Web Audio DSP filter graph.
      */
     async init() {
         if (this.mediaStream && this.cleanStream) return this.cleanStream;
 
         try {
-            // 1. Request hardware microphone with configured device & native AEC + NS
-            const savedDeviceId = this.options.deviceId || (typeof localStorage !== 'undefined' ? localStorage.getItem('valumni_selected_audio_device') : null);
+            const savedDeviceId =
+                this.options.deviceId ||
+                (typeof localStorage !== 'undefined' ? localStorage.getItem('valumni_selected_audio_device') : null);
 
             const baseAudioConstraints = {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
-                channelCount: 1
+                channelCount: 1,
+                sampleRate: { ideal: 48000 }
             };
 
             try {
@@ -74,7 +185,6 @@ export class AudioCleanerPipeline {
             const track = this.mediaStream.getAudioTracks()[0];
             this.activeDeviceLabel = track?.label || '';
 
-            // 2. Initialize Web Audio Context at hardware native sample rate to avoid double-resampling artifacts
             const AudioContextClass = window.AudioContext || window.webkitAudioContext;
             this.audioContext = new AudioContextClass();
 
@@ -82,44 +192,116 @@ export class AudioCleanerPipeline {
                 await this.audioContext.resume();
             }
 
+            const now = this.audioContext.currentTime;
             const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-            // 3. High-Pass Filter (85 Hz) - removes rumble & AC hum
+            // 1. Sub-Bass & Plosive Wind-Pop High-Pass (80 Hz Butterworth)
             const highPass = this.audioContext.createBiquadFilter();
             highPass.type = 'highpass';
-            highPass.frequency.setValueAtTime(85, this.audioContext.currentTime);
-            highPass.Q.setValueAtTime(0.707, this.audioContext.currentTime);
+            highPass.frequency.setValueAtTime(80, now);
+            highPass.Q.setValueAtTime(0.707, now);
 
-            // 4. Low-Pass Filter (7500 Hz) - removes high-pitched hiss
+            // 2. Philippine 60 Hz & 120 Hz Mains Hum Notch Filters
+            const notch60 = this.audioContext.createBiquadFilter();
+            notch60.type = 'notch';
+            notch60.frequency.setValueAtTime(60, now);
+            notch60.Q.setValueAtTime(12.0, now);
+
+            const notch120 = this.audioContext.createBiquadFilter();
+            notch120.type = 'notch';
+            notch120.frequency.setValueAtTime(120, now);
+            notch120.Q.setValueAtTime(12.0, now);
+
+            // 3. Low-Mid Desk/Room Boxiness Cut (220 Hz, -2.5 dB)
+            const mudCut = this.audioContext.createBiquadFilter();
+            mudCut.type = 'peaking';
+            mudCut.frequency.setValueAtTime(220, now);
+            mudCut.Q.setValueAtTime(1.1, now);
+            mudCut.gain.setValueAtTime(-2.5, now);
+
+            // 4. Vocal Formant & Consonant Articulation Presence Boost (2850 Hz, +2.5 dB)
+            const presenceBoost = this.audioContext.createBiquadFilter();
+            presenceBoost.type = 'peaking';
+            presenceBoost.frequency.setValueAtTime(2850, now);
+            presenceBoost.Q.setValueAtTime(0.85, now);
+            presenceBoost.gain.setValueAtTime(2.5, now);
+
+            // 5. Anti-Hiss Low-Pass Filter (7800 Hz ceiling for 16 kHz Whisper Nyquist)
             const lowPass = this.audioContext.createBiquadFilter();
             lowPass.type = 'lowpass';
-            const nyquistSafeCutoff = Math.min(7500, Math.floor(this.audioContext.sampleRate * 0.45));
-            lowPass.frequency.setValueAtTime(nyquistSafeCutoff, this.audioContext.currentTime);
-            lowPass.Q.setValueAtTime(0.707, this.audioContext.currentTime);
+            const nyquistSafeCutoff = Math.min(7800, Math.floor(this.audioContext.sampleRate * 0.45));
+            lowPass.frequency.setValueAtTime(nyquistSafeCutoff, now);
+            lowPass.Q.setValueAtTime(0.707, now);
 
-            // 5. Dynamics Compressor - balances speech levels without over-amplifying room hiss
-            const compressor = this.audioContext.createDynamicsCompressor();
-            compressor.threshold.setValueAtTime(-24, this.audioContext.currentTime);
-            compressor.knee.setValueAtTime(24, this.audioContext.currentTime);
-            compressor.ratio.setValueAtTime(6, this.audioContext.currentTime);
-            compressor.attack.setValueAtTime(0.005, this.audioContext.currentTime);
-            compressor.release.setValueAtTime(0.25, this.audioContext.currentTime);
+            // 6. Gentle Transparent Peak Limiter (prevents clipping without pumping background hiss)
+            const limiter = this.audioContext.createDynamicsCompressor();
+            limiter.threshold.setValueAtTime(-8, now);
+            limiter.knee.setValueAtTime(10, now);
+            limiter.ratio.setValueAtTime(2.5, now);
+            limiter.attack.setValueAtTime(0.003, now);
+            limiter.release.setValueAtTime(0.15, now);
 
-            // 6. Analyser Node for VAD & volume metering
+            // 7. Analyser Node for VAD & live volume metering
             this.analyser = this.audioContext.createAnalyser();
             this.analyser.fftSize = 1024;
-            this.analyser.smoothingTimeConstant = 0.35;
+            this.analyser.smoothingTimeConstant = 0.3;
 
-            // 7. Output destination stream for pristine MediaRecorder capture
+            // 8. Lossless PCM Capture Tap (2048 samples/frame connected to muted sink)
+            if (this.audioContext.createScriptProcessor) {
+                this.pcmProcessor = this.audioContext.createScriptProcessor(2048, 1, 1);
+                this.silentSink = this.audioContext.createGain();
+                this.silentSink.gain.setValueAtTime(0, now);
+
+                this.pcmProcessor.onaudioprocess = (event) => {
+                    if (!this.isProcessing) return;
+                    // Ignore the first 300ms post-TTS echo guard window
+                    if (Date.now() - this.listenStartTime < 300) return;
+
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    const chunkCopy = new Float32Array(inputData.length);
+                    chunkCopy.set(inputData);
+
+                    const maxTotalSamples = this.audioContext.sampleRate * 600; // 10 min cap for extended long-form answers
+
+                    if (!this.hasSpoken) {
+                        const maxPreRollSamples = Math.ceil((this.options.preRollMs / 1000) * this.audioContext.sampleRate);
+                        this.preRollChunks.push(chunkCopy);
+                        this.preRollSampleCount += chunkCopy.length;
+                        while (this.preRollSampleCount > maxPreRollSamples && this.preRollChunks.length > 1) {
+                            const dropped = this.preRollChunks.shift();
+                            this.preRollSampleCount -= dropped.length;
+                        }
+                    } else if (this.pcmSampleCount < maxTotalSamples) {
+                        this.pcmChunks.push(chunkCopy);
+                        this.pcmSampleCount += chunkCopy.length;
+                        if (this.isCurrentlySpeaking) {
+                            this.lastVoicedChunkIndex = this.pcmChunks.length - 1;
+                        }
+                    }
+                };
+            }
+
+            // 9. Cleaned MediaStreamDestination (fallback MediaRecorder stream)
             const destination = this.audioContext.createMediaStreamDestination();
             this.cleanStream = destination.stream;
 
-            // Connect filter graph: Source -> HighPass -> LowPass -> Compressor -> Analyser & Destination
+            // Wire DSP chain:
+            // source -> highPass -> notch60 -> notch120 -> mudCut -> presenceBoost -> lowPass -> limiter
             source.connect(highPass);
-            highPass.connect(lowPass);
-            lowPass.connect(compressor);
-            compressor.connect(this.analyser);
-            compressor.connect(destination);
+            highPass.connect(notch60);
+            notch60.connect(notch120);
+            notch120.connect(mudCut);
+            mudCut.connect(presenceBoost);
+            presenceBoost.connect(lowPass);
+            lowPass.connect(limiter);
+
+            limiter.connect(this.analyser);
+            limiter.connect(destination);
+            if (this.pcmProcessor && this.silentSink) {
+                limiter.connect(this.pcmProcessor);
+                this.pcmProcessor.connect(this.silentSink);
+                this.silentSink.connect(this.audioContext.destination);
+            }
 
             return this.cleanStream;
         } catch (err) {
@@ -129,7 +311,7 @@ export class AudioCleanerPipeline {
     }
 
     /**
-     * Start listening and recording with active VAD silence detection.
+     * Start listening and capturing cleaned lossless PCM + VAD silence detection.
      */
     async startListening() {
         if (!this.cleanStream) {
@@ -154,6 +336,7 @@ export class AudioCleanerPipeline {
             try { this.mediaRecorder.stop(); } catch (e) {}
         }
 
+        this.listenSessionId += 1;
         this.hasSpoken = false;
         this.isCurrentlySpeaking = false;
         this.activeSpeechFrames = 0;
@@ -162,11 +345,21 @@ export class AudioCleanerPipeline {
         this.speechStartTime = 0;
         this.silenceStartTime = 0;
         this.calibrationSamples = [];
-        this.dynamicSpeechThreshold = this.options.speechThreshold || 16;
+        this.dynamicSpeechThreshold = this.options.speechThreshold || 15;
+
+        this.preRollChunks = [];
+        this.preRollSampleCount = 0;
+        this.pcmChunks = [];
+        this.pcmSampleCount = 0;
+        this.lastVoicedChunkIndex = -1;
+        this.hasVoicedInCurrentSegment = false;
+        this.voicedFramesInCurrentSegment = 0;
+        this.segmentChunkIndex = 0;
+        this.activeFlushPromise = null;
         this.recordedChunks = [];
         this.isProcessing = true;
 
-        // Start MediaRecorder on the cleaned stream
+        // Keep high-bitrate MediaRecorder running in parallel as a secondary fallback
         try {
             const preferredTypes = [
                 'audio/webm;codecs=opus',
@@ -174,7 +367,9 @@ export class AudioCleanerPipeline {
                 'audio/ogg;codecs=opus'
             ];
             this.recorderMimeType = preferredTypes.find(t => MediaRecorder.isTypeSupported(t)) || '';
-            const recOptions = this.recorderMimeType ? { mimeType: this.recorderMimeType, audioBitsPerSecond: 64000 } : {};
+            const recOptions = this.recorderMimeType
+                ? { mimeType: this.recorderMimeType, audioBitsPerSecond: 96000 }
+                : {};
 
             this.mediaRecorder = new MediaRecorder(this.cleanStream, recOptions);
             this.mediaRecorder.ondataavailable = (e) => {
@@ -182,12 +377,11 @@ export class AudioCleanerPipeline {
                     this.recordedChunks.push(e.data);
                 }
             };
-            this.mediaRecorder.start(200); // Collect audio chunks every 200ms
+            this.mediaRecorder.start(200);
         } catch (e) {
-            console.warn('MediaRecorder error on cleanStream:', e);
+            console.warn('MediaRecorder fallback note:', e);
         }
 
-        // Start VAD Loop
         this.runVadLoop();
     }
 
@@ -195,11 +389,11 @@ export class AudioCleanerPipeline {
      * Returns true if sustained human speech was detected during this turn.
      */
     hasGenuineSpeech() {
-        return this.hasSpoken && this.totalSpeechFrames >= 12;
+        return this.hasSpoken && this.totalSpeechFrames >= 10;
     }
 
     /**
-     * Continuous Voice Activity & Silence Detection loop.
+     * Continuous Voice Activity & Silence Detection loop over human vocal frequencies (250 Hz - 3800 Hz).
      */
     runVadLoop() {
         if (!this.isProcessing || !this.analyser || !this.audioContext) return;
@@ -208,10 +402,9 @@ export class AudioCleanerPipeline {
         const dataArray = new Uint8Array(bufferLength);
         this.analyser.getByteFrequencyData(dataArray);
 
-        // Compute exact FFT bins corresponding to human vocal band (300 Hz - 3400 Hz)
         const binHz = this.audioContext.sampleRate / this.analyser.fftSize;
-        const startBin = Math.max(1, Math.floor(300 / binHz));
-        const endBin = Math.min(bufferLength - 1, Math.ceil(3400 / binHz));
+        const startBin = Math.max(1, Math.floor(250 / binHz));
+        const endBin = Math.min(bufferLength - 1, Math.ceil(3800 / binHz));
 
         let sum = 0;
         const binCount = Math.max(1, endBin - startBin + 1);
@@ -225,56 +418,90 @@ export class AudioCleanerPipeline {
 
         const now = Date.now();
 
-        // Ignore the first 350ms after TTS ends so speaker echo / room tail never false-triggers VAD
-        if (now - this.listenStartTime < 350) {
+        // Post-TTS room reflection guard (320 ms)
+        if (now - this.listenStartTime < 320) {
             this.animFrameId = requestAnimationFrame(() => this.runVadLoop());
             return;
         }
 
-        // Calibrate ambient noise floor over the initial ~20 quiet frames (~330ms)
+        // Dynamic ambient noise-floor calibration over initial quiet frames
         if (!this.hasSpoken && this.calibrationSamples.length < 20 && volume < 35) {
             this.calibrationSamples.push(volume);
             const sorted = [...this.calibrationSamples].sort((a, b) => a - b);
             const medianFloor = sorted[Math.floor(sorted.length / 2)] || 0;
-            this.dynamicSpeechThreshold = Math.max(this.options.speechThreshold || 16, medianFloor + 10);
+            this.dynamicSpeechThreshold = Math.max(this.options.speechThreshold || 15, medianFloor + 9);
         }
 
-        const speechThreshold = this.dynamicSpeechThreshold || this.options.speechThreshold || 16;
+        const speechThreshold = this.dynamicSpeechThreshold || this.options.speechThreshold || 15;
 
-        // 1. Detect Active Speech (require sustained consecutive frames to reject clicks/breaths)
         if (volume >= speechThreshold) {
             this.isCurrentlySpeaking = true;
             this.activeSpeechFrames += 1;
             this.totalSpeechFrames += 1;
 
-            // Require ~170ms (10 frames at 60fps) of sustained voice energy before marking speech started
-            if (this.activeSpeechFrames >= 10 && !this.hasSpoken) {
+            // Require ~150ms (9 frames) of sustained vocal energy to confirm speech start
+            if (this.activeSpeechFrames >= 9 && !this.hasSpoken) {
                 this.hasSpoken = true;
                 this.speechStartTime = now;
                 this.silenceStartTime = 0;
+                this.hasVoicedInCurrentSegment = true;
+                this.voicedFramesInCurrentSegment = this.activeSpeechFrames;
+
+                // Flush 600ms pre-speech ring buffer into active PCM recording so initial consonants are preserved!
+                if (this.preRollChunks.length > 0) {
+                    this.pcmChunks = [...this.preRollChunks, ...this.pcmChunks];
+                    this.pcmSampleCount += this.preRollSampleCount;
+                    this.lastVoicedChunkIndex = Math.max(0, this.pcmChunks.length - 1);
+                    this.preRollChunks = [];
+                    this.preRollSampleCount = 0;
+                }
+
                 this.options.onSpeechStart();
+            } else if (this.hasSpoken) {
+                this.hasVoicedInCurrentSegment = true;
+                this.voicedFramesInCurrentSegment += 1;
             }
 
-            // Reset silence timer whenever genuine vocal energy resumes (~80ms+)
-            if (this.hasSpoken && this.activeSpeechFrames >= 5) {
+            if (this.hasSpoken && this.activeSpeechFrames >= 4) {
                 this.silenceStartTime = 0;
             }
         } else {
             this.isCurrentlySpeaking = false;
             this.activeSpeechFrames = 0;
 
-            // 2. Track Silence once user has genuinely spoken
-            if (this.hasSpoken && this.totalSpeechFrames >= 16) {
+            if (this.hasSpoken && this.totalSpeechFrames >= 12) {
                 const speechDuration = now - this.speechStartTime;
 
-                if (speechDuration >= (this.options.minSpeechDurationMs || 800)) {
+                if (speechDuration >= (this.options.minSpeechDurationMs || 650)) {
+                    // Adaptive VAD: fast 1.55s cutoff for concise turns; 1.95s breathing room for multi-sentence long answers
+                    const adaptiveSilenceMs = speechDuration >= 4500
+                        ? (this.options.longTurnSilenceTimeoutMs || 1950)
+                        : (this.options.silenceTimeoutMs || 1550);
+
                     if (!this.silenceStartTime) {
                         this.silenceStartTime = now;
-                    } else if (now - this.silenceStartTime >= (this.options.silenceTimeoutMs || 2600)) {
-                        // User has finished their response!
-                        this.isProcessing = false;
-                        this.options.onSilenceDetected();
-                        return;
+                    } else {
+                        const silenceElapsed = now - this.silenceStartTime;
+                        const segDurationSec = this.pcmSampleCount / this.audioContext.sampleRate;
+
+                        // Breath-aligned background streaming: flush completed >=7.5s speech chunks on >=520ms breath pauses
+                        // so Office CPUs transcribe long answers incrementally while the user is still speaking!
+                        if (
+                            typeof this.options.onSpeechChunk === 'function' &&
+                            this.hasVoicedInCurrentSegment &&
+                            this.voicedFramesInCurrentSegment >= 16 &&
+                            segDurationSec >= (this.options.chunkMinDurationSec || 7.5) &&
+                            silenceElapsed >= (this.options.chunkSilenceSplitMs || 520) &&
+                            !this.activeFlushPromise
+                        ) {
+                            this._flushCurrentSegmentChunk();
+                        }
+
+                        if (silenceElapsed >= adaptiveSilenceMs) {
+                            this.isProcessing = false;
+                            this.options.onSilenceDetected();
+                            return;
+                        }
                     }
                 }
             }
@@ -284,7 +511,59 @@ export class AudioCleanerPipeline {
     }
 
     /**
-     * Stop listening, cancel VAD loop, and return the cleaned audio blob.
+     * Slices and encodes the current completed speech segment during a natural >=520ms breath pause
+     * so the server begins transcribing in the background while recording continues seamlessly.
+     */
+    _flushCurrentSegmentChunk() {
+        if (this.activeFlushPromise || !this.audioContext || this.pcmChunks.length === 0) return;
+
+        const sr = this.audioContext.sampleRate;
+        const sessionAtStart = this.listenSessionId;
+        const chunkIdx = this.segmentChunkIndex;
+        this.segmentChunkIndex += 1;
+
+        // Keep ~180ms of quiet breath frames as pre-roll cushion in case the interviewee continues speaking
+        const keepFrames = Math.min(
+            Math.max(1, Math.ceil((0.18 * sr) / 2048)),
+            Math.max(0, this.pcmChunks.length - 1)
+        );
+        const chunksToEncode = this.pcmChunks.slice();
+        const keptTail = keepFrames > 0 ? this.pcmChunks.slice(-keepFrames) : [];
+
+        this.pcmChunks = keptTail;
+        this.pcmSampleCount = keptTail.reduce((acc, c) => acc + c.length, 0);
+        this.lastVoicedChunkIndex = -1;
+        this.hasVoicedInCurrentSegment = false;
+        this.voicedFramesInCurrentSegment = 0;
+
+        let totalSamples = 0;
+        for (let i = 0; i < chunksToEncode.length; i++) {
+            totalSamples += chunksToEncode[i].length;
+        }
+        const merged = new Float32Array(totalSamples);
+        let offset = 0;
+        for (let i = 0; i < chunksToEncode.length; i++) {
+            merged.set(chunksToEncode[i], offset);
+            offset += chunksToEncode[i].length;
+        }
+
+        this.activeFlushPromise = encodeFloat32ToWav16k(merged, sr)
+            .then((wavBlob) => {
+                if (this.listenSessionId === sessionAtStart && wavBlob && wavBlob.size > 1200) {
+                    this.options.onSpeechChunk?.(wavBlob, chunkIdx);
+                }
+            })
+            .catch((err) => {
+                console.warn('Background speech chunk encode note:', err);
+            })
+            .finally(() => {
+                this.activeFlushPromise = null;
+            });
+    }
+
+    /**
+     * Stops listening and returns the remaining lossless 16 kHz PCM WAV tail (or null if 100% of speech
+     * was already flushed during breath pauses, or compact Opus WebM for non-chunked >20s turns).
      */
     async stopListening() {
         this.isProcessing = false;
@@ -295,9 +574,17 @@ export class AudioCleanerPipeline {
         }
         this.options.onSpeechVolume(0);
 
-        const blobType = this.recorderMimeType || 'audio/webm';
+        if (this.activeFlushPromise) {
+            try {
+                await this.activeFlushPromise;
+            } catch (e) {}
+        }
 
-        return new Promise((resolve) => {
+        const hadPriorFlushedChunks = this.segmentChunkIndex > 0;
+
+        // Stop parallel fallback MediaRecorder cleanly
+        const webmFallbackBlob = await new Promise((resolve) => {
+            const blobType = this.recorderMimeType || 'audio/webm';
             if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
                 this.mediaRecorder.onstop = () => {
                     const blob = new Blob(this.recordedChunks, { type: blobType });
@@ -320,16 +607,94 @@ export class AudioCleanerPipeline {
                 resolve(blob);
             }
         });
+
+        // If prior chunks were already flushed during breath pauses and no new speech occurred afterward, nothing remains to upload!
+        if (hadPriorFlushedChunks && (!this.hasVoicedInCurrentSegment || this.voicedFramesInCurrentSegment < 6)) {
+            this.pcmChunks = [];
+            this.pcmSampleCount = 0;
+            this.preRollChunks = [];
+            this.preRollSampleCount = 0;
+            return null;
+        }
+
+        // Build lossless 16kHz 16-bit PCM WAV from captured DSP buffers (or use compact Opus WebM for unchunked >20s turns)
+        const activeChunks = this.pcmChunks.length > 0 ? this.pcmChunks : this.preRollChunks;
+        if (activeChunks.length > 0 && this.audioContext) {
+            try {
+                const sr = this.audioContext.sampleRate;
+                let endChunkIdx = activeChunks.length;
+
+                // Trim excess trailing silence beyond tailPadMs (500ms)
+                if (this.pcmChunks.length > 0 && this.lastVoicedChunkIndex >= 0) {
+                    const padChunks = Math.ceil(((this.options.tailPadMs || 500) / 1000) * sr / 2048);
+                    endChunkIdx = Math.min(activeChunks.length, this.lastVoicedChunkIndex + 1 + padChunks);
+                }
+
+                let totalSamples = 0;
+                for (let i = 0; i < endChunkIdx; i++) {
+                    totalSamples += activeChunks[i].length;
+                }
+
+                const durationSec = totalSamples / sr;
+
+                // Only use full-turn WebM when no mid-turn chunks were flushed (avoids duplicating already-transcribed segments)
+                if (!hadPriorFlushedChunks && durationSec > 20 && webmFallbackBlob && webmFallbackBlob.size > 2000) {
+                    this.pcmChunks = [];
+                    this.pcmSampleCount = 0;
+                    this.preRollChunks = [];
+                    this.preRollSampleCount = 0;
+                    return webmFallbackBlob;
+                }
+
+                if (totalSamples > Math.floor(sr * 0.2)) {
+                    const merged = new Float32Array(totalSamples);
+                    let offset = 0;
+                    for (let i = 0; i < endChunkIdx; i++) {
+                        merged.set(activeChunks[i], offset);
+                        offset += activeChunks[i].length;
+                    }
+
+                    this.pcmChunks = [];
+                    this.pcmSampleCount = 0;
+                    this.preRollChunks = [];
+                    this.preRollSampleCount = 0;
+
+                    const wavBlob = await encodeFloat32ToWav16k(merged, sr);
+                    if (wavBlob && wavBlob.size > 1000) {
+                        return wavBlob;
+                    }
+                }
+            } catch (wavErr) {
+                console.warn('WAV encoding fallback to WebM:', wavErr);
+            }
+        }
+
+        this.pcmChunks = [];
+        this.pcmSampleCount = 0;
+        this.preRollChunks = [];
+        this.preRollSampleCount = 0;
+        return hadPriorFlushedChunks ? null : webmFallbackBlob;
     }
 
     /**
-     * Clean up all audio nodes and release microphone.
+     * Clean up all audio nodes and release microphone hardware.
      */
     destroy() {
         this.isProcessing = false;
         if (this.animFrameId) {
             cancelAnimationFrame(this.animFrameId);
             this.animFrameId = null;
+        }
+        if (this.pcmProcessor) {
+            try {
+                this.pcmProcessor.onaudioprocess = null;
+                this.pcmProcessor.disconnect();
+            } catch (e) {}
+            this.pcmProcessor = null;
+        }
+        if (this.silentSink) {
+            try { this.silentSink.disconnect(); } catch (e) {}
+            this.silentSink = null;
         }
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             try { this.mediaRecorder.stop(); } catch (e) {}

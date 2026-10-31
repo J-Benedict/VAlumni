@@ -3,6 +3,7 @@ import ccsLogo from '../../assets/ccs_logo.png';
 import { ProgramHeadAvatar, IntervieweeAvatar } from './InterviewAvatars';
 import { AudioCleanerPipeline } from '../services/audioCleaner';
 import { ttsService, tokenizeTextForSync } from '../services/ttsService';
+import { refineTranscript } from '../utils/transcriptRefiner';
 import { 
     INTERVIEW_DOMAINS, 
     generateProgramHeadReply, 
@@ -60,6 +61,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     const isSubmittingTurnRef = useRef(false);
     const isUnmountedRef = useRef(false);
     const handleUserTurnCompleteRef = useRef(null);
+    const chunkTranscriptsRef = useRef([]);
+    const chunkQueueRef = useRef(Promise.resolve());
+    const chunkSessionIdRef = useRef(0);
+    const enqueueSpeechChunkRef = useRef(null);
 
     // Sync state -> refs
     useEffect(() => { selectedVoiceRef.current = selectedVoice; }, [selectedVoice]);
@@ -264,12 +269,77 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
         }
     };
 
+    // Helper: Send a single audio segment to VoiceCleaner + faster-whisper with automatic tunnel retry
+    const transcribeAudioSegment = async (blob, stageNum) => {
+        if (!blob || blob.size <= 1200) return '';
+        for (let attempt = 0; attempt < 2; attempt++) {
+            let timeoutId = null;
+            try {
+                const controller = new AbortController();
+                timeoutId = setTimeout(() => controller.abort(), 120000);
+                const formData = new FormData();
+                const uploadName = blob.type?.includes('wav') ? 'cleaned_speech.wav' : 'cleaned_speech.webm';
+                formData.append('audio', blob, uploadName);
+                formData.append('stage', String(stageNum));
+
+                const whisperResp = await fetch('/api/stt/transcribe', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (whisperResp.ok) {
+                    const whisperData = await whisperResp.json();
+                    setSttStatus({ online: true, model: whisperData.model, device: whisperData.device });
+                    if (whisperData.success) {
+                        return (whisperData.transcript || '').trim();
+                    }
+                    return '';
+                }
+            } catch (err) {
+                if (timeoutId) clearTimeout(timeoutId);
+                if (err?.name === 'AbortError' || attempt === 1) {
+                    console.warn('Whisper STT segment note, using fallback if needed:', err);
+                    return null;
+                }
+                await new Promise((r) => setTimeout(r, 350));
+            }
+        }
+        return null;
+    };
+
+    // Enqueue breath-aligned speech chunks in FIFO order while user is still speaking (crucial for Office CPU speed!)
+    const enqueueBackgroundSpeechChunk = (wavBlob, chunkIdx) => {
+        const sessionId = chunkSessionIdRef.current;
+        const stageAtSpeak = currentStageRef.current;
+        chunkQueueRef.current = chunkQueueRef.current.then(async () => {
+            if (isUnmountedRef.current || chunkSessionIdRef.current !== sessionId) return;
+            const piece = await transcribeAudioSegment(wavBlob, stageAtSpeak);
+            if (chunkSessionIdRef.current !== sessionId || piece === null) return;
+            if (piece) {
+                chunkTranscriptsRef.current[chunkIdx] = piece;
+                // Surface progressive Whisper text on browsers without Web Speech API (e.g., Firefox / Brave)
+                if (!webSpeechRecRef.current) {
+                    const progressive = chunkTranscriptsRef.current.filter(Boolean).join(' ').trim();
+                    if (progressive) {
+                        setLiveTranscript(progressive);
+                        liveTranscriptRef.current = progressive;
+                    }
+                }
+            }
+        });
+    };
+
     // -------------------------------------------------------------------------
     // HANDS-FREE VOICE LOOP: Step A - Start Listening to Interviewee
     // -------------------------------------------------------------------------
     const startIntervieweeListening = async () => {
         if (isUnmountedRef.current) return;
         isSubmittingTurnRef.current = false;
+        chunkSessionIdRef.current += 1;
+        chunkTranscriptsRef.current = [];
+        chunkQueueRef.current = Promise.resolve();
         setStreamingSpeech(null);
         setTurnState('user_listening');
         turnStateRef.current = 'user_listening';
@@ -323,16 +393,17 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         .trim();
 
                     if (combined) {
+                        const refinedLive = refineTranscript(combined, { stage: currentStageRef.current }) || combined;
                         setMicNotice('');
-                        setLiveTranscript(combined);
-                        liveTranscriptRef.current = combined;
+                        setLiveTranscript(refinedLive);
+                        liveTranscriptRef.current = refinedLive;
 
                         // Only rely on Web Speech silence timer if AudioCleaner DSP VAD could not initialize
                         if (!hasDspVad) {
                             if (speechEndTimeoutRef.current) clearTimeout(speechEndTimeoutRef.current);
                             speechEndTimeoutRef.current = setTimeout(() => {
                                 handleUserTurnCompleteRef.current?.();
-                            }, 2800);
+                            }, 1850);
                         }
                     }
                 };
@@ -387,7 +458,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
             webSpeechRecRef.current = null;
         }
 
-        // 2. Stop cleaned DSP recorder and obtain audio blob
+        // 2. Stop cleaned DSP recorder and obtain remaining audio tail (if not already flushed during breath pauses)
         const hadGenuineMicSpeech = audioCleanerRef.current?.hasGenuineSpeech?.() || false;
         let audioBlob = null;
         if (audioCleanerRef.current) {
@@ -396,38 +467,28 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
         let finalTranscriptText = '';
 
-        // 3. Primary STT: Send cleaned microphone recording to faster-whisper (supports Tagalog, English, Taglish & custom deviceId)
+        // 3. Primary STT: Await any background breath-aligned chunks + transcribe remaining tail
+        await chunkQueueRef.current;
+        const collectedParts = [...chunkTranscriptsRef.current.filter(Boolean)];
+
         if (audioBlob && audioBlob.size > 1200) {
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 25000);
-                const formData = new FormData();
-                formData.append('audio', audioBlob, 'cleaned_speech.webm');
-
-                const whisperResp = await fetch('/api/stt/transcribe', {
-                    method: 'POST',
-                    body: formData,
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-
-                if (whisperResp.ok) {
-                    const whisperData = await whisperResp.json();
-                    if (!sttStatusRef.current.online) {
-                        setSttStatus({ online: true, model: whisperData.model, device: whisperData.device });
-                    }
-                    if (whisperData.success && whisperData.transcript && whisperData.transcript.trim()) {
-                        finalTranscriptText = whisperData.transcript.trim();
-                    }
-                }
-            } catch (err) {
-                console.warn('Whisper STT unavailable, falling back to browser speech transcript:', err);
+            const tailText = await transcribeAudioSegment(audioBlob, currentStageRef.current);
+            if (tailText) {
+                collectedParts.push(tailText);
             }
+        }
+
+        if (collectedParts.length > 0) {
+            finalTranscriptText = refineTranscript(collectedParts.join(' ').trim(), {
+                stage: currentStageRef.current
+            });
         }
 
         // 4. Fallback STT: Browser live transcript if Whisper returned empty or was offline
         if (!finalTranscriptText && liveTranscriptRef.current && liveTranscriptRef.current.trim()) {
-            finalTranscriptText = liveTranscriptRef.current.trim();
+            finalTranscriptText = refineTranscript(liveTranscriptRef.current.trim(), {
+                stage: currentStageRef.current
+            });
         }
 
         // 5. NEVER insert a predetermined answer! If no speech was captured, prompt user & keep listening on the same stage.
@@ -511,9 +572,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
         }
     };
 
-    // Keep latest handler in ref so VAD & keyboard callbacks never use stale state
+    // Keep latest handlers in refs so VAD & keyboard callbacks never use stale state
     useEffect(() => {
         handleUserTurnCompleteRef.current = handleUserTurnComplete;
+        enqueueSpeechChunkRef.current = enqueueBackgroundSpeechChunk;
     });
 
     // -------------------------------------------------------------------------
@@ -533,14 +595,20 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
             // 1. Initialize Web Audio DSP Noise Reduction Pipeline
             try {
                 audioCleanerRef.current = new AudioCleanerPipeline({
-                    silenceTimeoutMs: 2600,
-                    speechThreshold: 16,
-                    minSpeechDurationMs: 800,
+                    silenceTimeoutMs: 1550,
+                    longTurnSilenceTimeoutMs: 1950,
+                    speechThreshold: 15,
+                    minSpeechDurationMs: 650,
+                    chunkMinDurationSec: 7.5,
+                    chunkSilenceSplitMs: 520,
                     onSpeechStart: () => {
                         setMicNotice('');
                     },
                     onSpeechVolume: (vol) => {
                         setMicVolume(vol);
+                    },
+                    onSpeechChunk: (wavBlob, chunkIdx) => {
+                        enqueueSpeechChunkRef.current?.(wavBlob, chunkIdx);
                     },
                     onSilenceDetected: () => {
                         handleUserTurnCompleteRef.current?.();
@@ -981,7 +1049,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                                     <p className="italic text-sm sm:text-base text-emerald-50 font-medium">
                                         {liveTranscript
                                             ? `"${liveTranscript}"`
-                                            : 'Speak naturally into your microphone. Auto-submits after 2.6s of silence once you finish speaking, or click Done Speaking.'}
+                                            : 'Speak naturally into your microphone (short or long answers welcome). Auto-submits ~1.6s after you finish speaking, or click Done Speaking.'}
                                     </p>
                                 </div>
                             </div>
@@ -1019,7 +1087,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                             <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold">
                                 100% HANDS-FREE VOICE
                             </span>
-                            <span className="hidden sm:inline">Automatic silence detection (2.6s) after speech • Spacebar to finish speaking</span>
+                            <span className="hidden sm:inline">Adaptive silence detection (~1.6s) • Long answers supported • Spacebar to finish speaking</span>
                         </div>
                         {isUserListening && (
                             <button

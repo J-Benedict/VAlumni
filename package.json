@@ -8,6 +8,8 @@
     "dev:server": "npm --prefix server run dev",
     "dev:stt": "py stt_service/app.py",
     "dev": "concurrently -n \"CLIENT,SERVER,STT\" -c \"cyan,yellow,magenta\" \"npm run dev:client\" \"npm run dev:server\" \"npm run dev:stt\"",
+    "tunnel": "cloudflared.exe tunnel --url http://localhost:3000",
+    "dev:share": "concurrently -n \"DEV,TUNNEL\" -c \"blue,green\" \"npm run dev\" \"npm run tunnel\"",
     "build": "vite build",
     "preview": "vite preview"
   },

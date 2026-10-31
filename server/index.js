@@ -39,7 +39,7 @@ app.get('/api/stt/status', async (req, res) => {
     return res.json({ online: false, message: 'Whisper STT service offline. Using Web Speech API fallback.' });
 });
 
-// Forward audio upload to faster-whisper microservice
+// Forward audio upload + context hints to VoiceCleaner + faster-whisper microservice
 app.post('/api/stt/transcribe', upload.single('audio'), async (req, res) => {
     try {
         if (!req.file) {
@@ -47,8 +47,15 @@ app.post('/api/stt/transcribe', upload.single('audio'), async (req, res) => {
         }
 
         const formData = new FormData();
-        const audioBlob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/webm' });
-        formData.append('file', audioBlob, req.file.originalname || 'recording.webm');
+        const audioBlob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/wav' });
+        formData.append('file', audioBlob, req.file.originalname || 'cleaned_speech.wav');
+
+        if (req.body?.stage !== undefined && req.body.stage !== '') {
+            formData.append('stage', String(req.body.stage));
+        }
+        if (req.body?.field_hint) {
+            formData.append('field_hint', String(req.body.field_hint));
+        }
 
         const resp = await fetch(`${STT_SERVICE_URL}/transcribe`, {
             method: 'POST',

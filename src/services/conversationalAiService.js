@@ -173,7 +173,7 @@ function parseGraduateName(firstTurn = '') {
         if (m && m[1]) {
             const candidate = m[1].replace(/\b(po|opo|sir|ma'am|maam|doc)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
             if (candidate.length >= 2 && candidate.split(/\s+/).length <= 6) {
-                return correctFilipinoName(candidate, 'lastname');
+                return correctFilipinoName(candidate, 'fullname');
             }
         }
     }
@@ -191,7 +191,7 @@ function parseGraduateName(firstTurn = '') {
     const firstClause = cleaned.split(/[,.;!?\n]/)[0].trim();
     const words = firstClause.split(/\s+/).filter(Boolean);
     if (words.length >= 1 && words.length <= 5 && firstClause.length >= 2 && firstClause.length <= 45) {
-        return correctFilipinoName(firstClause, 'lastname');
+        return correctFilipinoName(firstClause, 'fullname');
     }
 
     return '';

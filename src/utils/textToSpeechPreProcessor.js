@@ -63,6 +63,12 @@ export function preprocessTextForTts(text, voiceOrLang = 'fil') {
         processed = processed.replace(/\bSSDs\b/gi, 'mga Es-Es-Di');
         processed = processed.replace(/\bSSD\b/gi, 'Es-Es-Di');
         processed = processed.replace(/\bSNS\b/gi, 'Es-En-Es');
+
+        // Spanish-Filipino '-illa' / '-illo' surname pronunciation for fil-PH neural voices
+        processed = processed.replace(/\bHornilla\b/gi, 'Hornilya');
+        processed = processed.replace(/\bPadilla\b/gi, 'Padilya');
+        processed = processed.replace(/\bAgoncillo\b/gi, 'Agonsilyo');
+        processed = processed.replace(/\bMontecillo\b/gi, 'Montesilyo');
     } else {
         // 2B. English Dotted Initialisms for en-PH Neural Voices (James & Rosa)
         processed = processed.replace(/\b(LSPU|L\.S\.P\.U\.|L\.\s*S\.\s*P\.\s*U\.)\b/gi, 'L.S.P.U.');

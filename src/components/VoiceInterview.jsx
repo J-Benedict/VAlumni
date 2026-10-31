@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ccsLogo from '../../assets/ccs_logo.png';
 import { LSPU_SURVEY_STRUCTURE, DATA_PRIVACY_TEXT, analyzeSentiment, correctFilipinoName, convertWordsToDigits, refineTranscriptWithGemini, getNameSpellingSuggestions } from '../services/aiService';
+import { refineTranscript } from '../utils/transcriptRefiner';
 import { Mic, MicOff, Volume2, VolumeX, ShieldCheck, Play, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Award, Sparkles, FileText, Lock } from 'lucide-react';
 
 export default function VoiceInterview({ onInterviewComplete, onExitToLanding, initialStage = 'survey' }) {
@@ -86,18 +87,25 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
     }, []);
 
 
-    // Transcribe recorded audio with Whisper Large-v3-Turbo
+    // Transcribe recorded audio with VoiceCleaner + Whisper Large-v3-Turbo
     const transcribeWithWhisper = async () => {
         if (!sttStatus.online || audioChunksRef.current.length === 0) {
             setIsTranscribingWithWhisper(false);
             return;
         }
         setIsTranscribingWithWhisper(true);
-        const timeoutId = setTimeout(() => setIsTranscribingWithWhisper(false), 4000);
+        const timeoutId = setTimeout(() => setIsTranscribingWithWhisper(false), 90000);
         try {
+            const activeQ = currentQuestionRef.current;
             const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
             const formData = new FormData();
-            formData.append('audio', blob, 'recording.webm');
+            formData.append('audio', blob, 'cleaned_recording.webm');
+            if (activeQ?.sectionId) {
+                formData.append('stage', String(activeQ.sectionId));
+            }
+            if (activeQ?.id) {
+                formData.append('field_hint', activeQ.id);
+            }
 
             const res = await fetch('/api/stt/transcribe', {
                 method: 'POST',
@@ -108,7 +116,6 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                 const data = await res.json();
                 if (data.success && data.transcript && data.transcript.trim()) {
                     let whisperText = data.transcript.trim();
-                    const activeQ = currentQuestionRef.current;
                     if (activeQ) {
                         if (activeQ.id === 'demo_middleinitial') {
                             whisperText = correctFilipinoName(whisperText, 'middleinitial');
@@ -118,6 +125,11 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
                             whisperText = correctFilipinoName(whisperText, 'firstname');
                         } else if (activeQ.id === 'demo_studentid' || activeQ.id === 'demo_grad_year' || activeQ.type === 'rating') {
                             whisperText = convertWordsToDigits(whisperText, activeQ.type === 'rating');
+                        } else {
+                            whisperText = refineTranscript(whisperText, {
+                                stage: activeQ.sectionId,
+                                fieldHint: activeQ.id
+                            });
                         }
                     }
                     setLiveTranscript(prev => {
@@ -149,19 +161,85 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
 
         try {
             const savedDevId = typeof localStorage !== 'undefined' ? localStorage.getItem('valumni_selected_audio_device') : null;
+            const audioConstraints = {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                channelCount: 1
+            };
             let stream;
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: savedDevId ? { deviceId: { exact: savedDevId } } : true });
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: savedDevId ? { ...audioConstraints, deviceId: { exact: savedDevId } } : audioConstraints
+                });
             } catch (devErr) {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
             }
             streamRef.current = stream;
 
-            // Start MediaRecorder for Whisper STT
+            const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+            const audioCtx = new AudioCtxClass();
+            audioContextRef.current = audioCtx;
+
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
+            // Build DSP Voice Cleaner filter chain before MediaRecorder
+            const now = audioCtx.currentTime;
+            const source = audioCtx.createMediaStreamSource(stream);
+
+            const highPass = audioCtx.createBiquadFilter();
+            highPass.type = 'highpass';
+            highPass.frequency.setValueAtTime(80, now);
+            highPass.Q.setValueAtTime(0.707, now);
+
+            const notch60 = audioCtx.createBiquadFilter();
+            notch60.type = 'notch';
+            notch60.frequency.setValueAtTime(60, now);
+            notch60.Q.setValueAtTime(12.0, now);
+
+            const presenceBoost = audioCtx.createBiquadFilter();
+            presenceBoost.type = 'peaking';
+            presenceBoost.frequency.setValueAtTime(2850, now);
+            presenceBoost.Q.setValueAtTime(0.85, now);
+            presenceBoost.gain.setValueAtTime(2.5, now);
+
+            const lowPass = audioCtx.createBiquadFilter();
+            lowPass.type = 'lowpass';
+            lowPass.frequency.setValueAtTime(Math.min(7800, Math.floor(audioCtx.sampleRate * 0.45)), now);
+            lowPass.Q.setValueAtTime(0.707, now);
+
+            const limiter = audioCtx.createDynamicsCompressor();
+            limiter.threshold.setValueAtTime(-8, now);
+            limiter.knee.setValueAtTime(10, now);
+            limiter.ratio.setValueAtTime(2.5, now);
+
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            analyserRef.current = analyser;
+
+            const cleanDest = audioCtx.createMediaStreamDestination();
+
+            source.connect(highPass);
+            highPass.connect(notch60);
+            notch60.connect(presenceBoost);
+            presenceBoost.connect(lowPass);
+            lowPass.connect(limiter);
+            limiter.connect(analyser);
+            limiter.connect(cleanDest);
+
+            // Start MediaRecorder on DSP-cleaned stream for Whisper STT
             try {
                 audioChunksRef.current = [];
-                const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm')) ? 'audio/webm' : '';
-                const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+                const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))
+                    ? 'audio/webm;codecs=opus'
+                    : (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm'))
+                        ? 'audio/webm'
+                        : '';
+                const recorder = mimeType
+                    ? new MediaRecorder(cleanDest.stream, { mimeType, audioBitsPerSecond: 128000 })
+                    : new MediaRecorder(cleanDest.stream);
                 recorder.ondataavailable = (e) => {
                     if (e.data && e.data.size > 0) {
                         audioChunksRef.current.push(e.data);
@@ -172,20 +250,6 @@ export default function VoiceInterview({ onInterviewComplete, onExitToLanding, i
             } catch (recorderErr) {
                 console.warn('MediaRecorder init note:', recorderErr);
             }
-
-            const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioCtxClass();
-            audioContextRef.current = audioCtx;
-
-            if (audioCtx.state === 'suspended') {
-                await audioCtx.resume();
-            }
-
-            const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 256;
-            analyserRef.current = analyser;
-            const source = audioCtx.createMediaStreamSource(stream);
-            source.connect(analyser);
 
             const timeData = new Uint8Array(analyser.fftSize);
             const updateVolume = () => {
