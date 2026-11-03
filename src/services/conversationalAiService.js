@@ -11,6 +11,7 @@
 
 import { getInterviewTranscripts, saveInterviewTranscriptRecord } from '../utils/transcriptStorage';
 import { analyzeSentiment, correctFilipinoName } from './aiService';
+import { computeInterviewRatings, extractAspectRatings } from '../utils/ratingExtractor';
 
 // Google AI Studio API is DISCONNECTED - 100% autonomous local dialogue engine
 
@@ -86,37 +87,42 @@ INSTITUTIONAL KNOWLEDGE FROM PAST ${totalCount} GRADUATE INTERVIEWS:
 export const INTERVIEW_DOMAINS = [
     {
         stage: 1,
-        name: "Welcome & Alumni Profile",
-        goals: "Welcome graduated alumnus warmly, ask for Full Name, optional Student ID number if remembered, degree program (BSCS vs BSIT), and Capstone role.",
+        name: "Welcome & Alumni Identity",
+        goals: "Welcome graduated alumnus warmly, ask for Full Name and optional Student ID number if remembered.",
         starterMessage: "Magandang araw! Ako ang Program Head ng College of Computer Studies sa LSPU. Unang-una, maligayang pagbati bilang ganap na graduate at alumnus ng ating kolehiyo! Bilang bahagi ng ating alumni exit interview, nais naming marinig ang iyong naging karanasan noong nag-aaral ka pa upang patuloy na mapabuti ang ating departamento. Bago tayo magsimula, maaari mo bang sabihin ang iyong buong pangalan? At if possible, can you also share your student id if you still remember it?"
     },
     {
         stage: 2,
+        name: "Academic Standing & Honors",
+        goals: "Ask for the alumnus's degree program, college department, year of graduation, General Weighted Average (GWA), and whether they graduated with any Latin Honors."
+    },
+    {
+        stage: 3,
         name: "Curriculum & Tech Stack Evaluation",
         goals: "Inquire about core programming theories and electives (ratings 1-5), what tech stack was most valuable, and what missing technologies (e.g. Cloud, Docker) should be added."
     },
     {
-        stage: 3,
+        stage: 4,
         name: "Lab Infrastructure & Grievances",
         goals: "Ask about Computer Lab hardware, software IDEs, and campus Wi-Fi (ratings 1-5). Reference past alumni feedback regarding Wi-Fi latency or PC boot times, and ask for their biggest grievance."
     },
     {
-        stage: 4,
+        stage: 5,
         name: "Capstone Mentorship & Internship",
-        goals: "Ask how they rate their Capstone project mentorship (1-5) and IT Internship practicum value (1-5)."
+        goals: "Ask about their Capstone role, how they rate their Capstone project mentorship (1-5), and IT Internship practicum value (1-5)."
     },
     {
-        stage: 5,
+        stage: 6,
         name: "Career Readiness & Alumni Relations",
         goals: "Ask about current employment status, confidence passing technical coding interviews, and if they'd return as an alumni guest speaker or mentor."
     },
     {
-        stage: 6,
+        stage: 7,
         name: "Rewarding Breakthrough & Freshman Advice",
         goals: "Ask for their most rewarding breakthrough moment, any process in CCS they'd optimize (defense schedules, grading), and their golden advice/legacy tip for incoming freshmen."
     },
     {
-        stage: 7,
+        stage: 8,
         name: "Graduation Blessing & Automatic Save",
         goals: "Deliver a heartfelt, inspirational graduation blessing on behalf of LSPU CCS faculty, and conclude the interview."
     }
@@ -157,30 +163,45 @@ function parseSpokenStudentId(text = '') {
     return 'Not Provided';
 }
 
-/**
- * Helper: Extract clean graduate name from Stage 1 introduction
- */
-function parseGraduateName(firstTurn = '') {
-    if (!firstTurn || !firstTurn.trim()) return '';
+const INTRO_FILLER_TOKENS = new Set([
+    'ako', 'po', 'opo', 'ay', 'si', 'nga', 'pala', 'ang', 'aking', 'buong', 'pangalan', 'ko',
+    'ito', 'my', 'full', 'complete', 'name', 'is', 'i', 'am', "i'm", 'im', 'this',
+    'sir', "ma'am", 'maam', 'madam', 'doc', 'dean', 'hello', 'hi', 'hey',
+    'magandang', 'araw', 'umaga', 'hapon', 'gabi', 'good', 'morning', 'afternoon', 'evening', 'day'
+]);
 
-    // Try targeted patterns first: "ako po si X", "my name is X", "pangalan ko po ay X", "i am X"
+/**
+ * Helper: Extract clean graduate name accurately from Stage 1 introduction (Tagalog, English, or Taglish)
+ */
+export function parseGraduateName(firstTurn = '') {
+    if (!firstTurn || typeof firstTurn !== 'string' || !firstTurn.trim()) return '';
+
+    // 1. Targeted Tagalog / Taglish / English self-introduction patterns
+    // Covers: "Ako ay si X", "Ako po ay si X", "Ako po si X", "Ako nga pala si X",
+    // "Ang aking buong pangalan po ay X", "Pangalan ko po ay X", "Ito po si X", "My full name is X", "I am X"
     const introPatterns = [
-        /(?:ako\s+(?:po\s+)?si|pangalan\s+ko\s+(?:po\s+)?ay|my\s+(?:full\s+)?name\s+is|i\s+am|i'm)\s+([A-Za-zÑñ.\-\s]{2,50}?)(?=\s*(?:,|at\b|and\b|ang\b|my\b|student\b|id\b|i\.d\b|from\b|taking\b|graduate\b|bsit\b|bscs\b|wala\b|hindi\b|\d|$))/i
+        /(?:ako\s+(?:po\s+)?(?:nga\s+pala\s+|pala\s+)?(?:ay\s+)?si|(?:ang\s+)?(?:aking\s+)?(?:buong\s+)?pangalan\s+(?:ko\s+)?(?:po\s+)?(?:ay|is|si)|ito\s+(?:po\s+)?si|my\s+(?:full\s+|complete\s+)?name\s+is|i\s+am|i'm|this\s+is)\s+([A-Za-zÑñÁÉÍÓÚáéíóú.\-\s]{2,55}?)(?=\s*(?:,|;|\.|!|\?|\bat\b|\band\b|\bang\b|\baking\b|\bmy\b|\bstudent\b|\bid\b|\bi\.d\b|\bnumber\b|\bnoong\b|\bnoon\b|\bfrom\b|\btaking\b|\bgraduate\b|\bgraduated\b|\balumnus\b|\bbsit\b|\bbscs\b|\bwala\b|\bhindi\b|\bpo\s+(?:ito|ako|at|ang)\b|\d|$))/i
     ];
 
     for (const pattern of introPatterns) {
         const m = firstTurn.match(pattern);
         if (m && m[1]) {
-            const candidate = m[1].replace(/\b(po|opo|sir|ma'am|maam|doc)\b/gi, '').replace(/\s{2,}/g, ' ').trim();
-            if (candidate.length >= 2 && candidate.split(/\s+/).length <= 6) {
+            const candidateTokens = m[1]
+                .replace(/\b(po|opo|sir|ma'am|maam|doc)\b/gi, ' ')
+                .split(/\s+/)
+                .map(t => t.trim())
+                .filter(t => t && !INTRO_FILLER_TOKENS.has(t.toLowerCase().replace(/\./g, '')));
+
+            const candidate = candidateTokens.join(' ').trim();
+            if (candidate.length >= 2 && candidateTokens.length >= 1 && candidateTokens.length <= 6) {
                 return correctFilipinoName(candidate, 'fullname');
             }
         }
     }
 
-    // Fallback: strip greetings, ID clauses, and course clauses
+    // 2. Fallback: strip greetings, intro glue words, student ID clauses, and course clauses
     let cleaned = firstTurn
-        .replace(/\b(magandang\s+(?:araw|umaga|hapon|gabi)|good\s+(?:morning|afternoon|evening|day)|hello|hi|hey|opo|po|sir|ma'am|maam)\b/gi, ' ')
+        .replace(/\b(magandang\s+(?:araw|umaga|hapon|gabi)|good\s+(?:morning|afternoon|evening|day)|hello|hi|hey|opo|po|sir|ma'am|maam|doc)\b/gi, ' ')
         .replace(/(?:at\s+)?(?:ang\s+)?(?:aking\s+|my\s+)?student\s*(?:id|i\.d\.?|number)[^,.]*/gi, ' ')
         .replace(/(?:i\s+don'?t\s+remember|nakalimutan|hindi\s+ko\s+(?:na\s+)?maalala|wala\s+(?:na\s+)?(?:po\s+)?akong\s+maalala)[^,.]*/gi, ' ')
         .replace(/\b\d{2,4}[-\s]?\d{3,6}\b/g, ' ')
@@ -189,66 +210,223 @@ function parseGraduateName(firstTurn = '') {
         .trim();
 
     const firstClause = cleaned.split(/[,.;!?\n]/)[0].trim();
-    const words = firstClause.split(/\s+/).filter(Boolean);
-    if (words.length >= 1 && words.length <= 5 && firstClause.length >= 2 && firstClause.length <= 45) {
-        return correctFilipinoName(firstClause, 'fullname');
+    const nameWords = firstClause
+        .split(/\s+/)
+        .filter(w => w && !INTRO_FILLER_TOKENS.has(w.toLowerCase().replace(/\./g, '')) && !/\d/.test(w));
+
+    if (nameWords.length >= 1 && nameWords.length <= 5) {
+        const candidate = nameWords.join(' ').trim();
+        if (candidate.length >= 2 && candidate.length <= 48) {
+            return correctFilipinoName(candidate, 'fullname');
+        }
     }
 
     return '';
 }
 
 /**
+ * Resolves the accurate display name for any session record, automatically recovering the
+ * graduate's real spoken name from A1 if an older saved record defaulted to "Anonymous Graduate".
+ */
+export function resolveSessionDisplayName(session) {
+    if (!session) return 'Anonymous Graduate';
+    const rawName = (session.name || '').trim();
+    if (rawName && !/^(anonymous(\s+graduate)?|n\/a|unknown)$/i.test(rawName)) {
+        return rawName;
+    }
+
+    // Attempt recovery from A1 in rawResponses
+    const qaPairs = session.rawResponses?.qaPairs;
+    if (Array.isArray(qaPairs)) {
+        const firstAnswer = qaPairs.find(p => p.type === 'answer' || p.speaker === 'Interviewee');
+        if (firstAnswer?.text) {
+            const recovered = parseGraduateName(firstAnswer.text);
+            if (recovered) return recovered;
+        }
+    }
+
+    const fullConv = session.rawResponses?.fullConversationTranscript;
+    if (Array.isArray(fullConv)) {
+        const firstStudentTurn = fullConv.find(t => t.sender === 'interviewee');
+        if (firstStudentTurn?.text) {
+            const recovered = parseGraduateName(firstStudentTurn.text);
+            if (recovered) return recovered;
+        }
+    }
+
+    return rawName || 'Anonymous Graduate';
+}
+
+/**
  * Helper: Detect degree program from text
  */
 function parseDegreeProgram(text = '') {
-    if (/computer\s+science|\bbscs\b|\bcomsci\b/i.test(text)) {
+    if (!text) return null;
+    if (/master.*information\s+technology|\bmsit\b|\bmit\b/i.test(text)) {
+        return 'Master in Information Technology (MIT)';
+    }
+    if (/master.*computer\s+science|\bmscs\b/i.test(text)) {
+        return 'MS in Computer Science (MSCS)';
+    }
+    if (/associate\s+in\s+computer\s+technology|\bact\b/i.test(text)) {
+        return 'Associate in Computer Technology (ACT)';
+    }
+    if (/computer\s+science|\bbscs\b|\bcom\s*sci\b|\bb\.s\.\s*c\.s\b/i.test(text)) {
         return 'BS in Computer Science (BSCS)';
     }
-    if (/information\s+technology|\bbsit\b/i.test(text)) {
+    if (/information\s+technology|\bbsit\b|\bb\.s\.\s*i\.t\b/i.test(text)) {
         return 'BS in Information Technology (BSIT)';
+    }
+    const customDegree = text.match(/\b((?:bachelor\s+of\s+(?:science|arts)\s+in|bs\s+in)\s+[A-Za-z\s]{4,40}?)(?=\s*(?:,|;|\.|sa\b|ng\b|from\b|under\b|noong\b|year\b|batch\b|\d|$))/i);
+    if (customDegree && customDegree[1]) {
+        return customDegree[1].trim();
     }
     return null;
 }
 
 /**
- * Helper: Extract 1-5 ratings mentioned in a turn (supports digits, English/Tagalog number words, and sentiment fallback)
+ * Helper: Detect college department from spoken text
+ */
+function parseCollegeDepartment(text = '') {
+    if (!text) return 'College of Computer Studies (CCS)';
+    if (/college\s+of\s+computer\s+studies|\bcomputer\s+studies\b|\bccs\b/i.test(text)) {
+        return 'College of Computer Studies (CCS)';
+    }
+    if (/college\s+of\s+engineering|\bcoe\b/i.test(text)) {
+        return 'College of Engineering (COE)';
+    }
+    const explicitCollege = text.match(/\b((?:college|department|faculty)\s+of\s+[A-Za-z\s,&]{4,45}?)(?=\s*(?:,|;|\.|at\b|and\b|noong\b|sa\s+lspu\b|year\b|batch\b|ang\b|\d|$))/i);
+    if (explicitCollege && explicitCollege[1]) {
+        return explicitCollege[1].trim();
+    }
+    return 'College of Computer Studies (CCS)';
+}
+
+/**
+ * Helper: Extract 4-digit Year of Graduation (e.g., 2026, 2025, 2024)
+ */
+function parseGraduationYear(text = '') {
+    if (!text) return '2026';
+    const normalized = text
+        .toLowerCase()
+        .replace(/\b(?:twenty|two\s+thousand(?:\s+and)?)\s+twenty[\s-]*six\b/g, '2026')
+        .replace(/\b(?:twenty|two\s+thousand(?:\s+and)?)\s+twenty[\s-]*five\b/g, '2025')
+        .replace(/\b(?:twenty|two\s+thousand(?:\s+and)?)\s+twenty[\s-]*four\b/g, '2024')
+        .replace(/\b(?:twenty|two\s+thousand(?:\s+and)?)\s+twenty[\s-]*three\b/g, '2023')
+        .replace(/\b(?:twenty|two\s+thousand(?:\s+and)?)\s+twenty[\s-]*seven\b/g, '2027');
+
+    // Avoid matching inside hyphenated Student IDs (e.g., 0123-2024)
+    const strippedIds = normalized.replace(/\b\d{2,4}-\d{3,6}\b/g, ' ');
+    const yearMatch = strippedIds.match(/\b(20[1-3]\d|199\d)\b/);
+    if (yearMatch) {
+        return yearMatch[1];
+    }
+    return '2026';
+}
+
+/**
+ * Helper: Extract General Weighted Average (GWA, Philippine 1.00 - 3.00 scale) from Stage 2 answer
+ */
+function parseGWA(text = '') {
+    if (!text || !text.trim()) return 'Not Provided';
+
+    let normalized = text
+        .toLowerCase()
+        .replace(/\b(uno|one)\s+(?:point\s+)?(singkwenta|fifty|five\s+zero)\b/g, '1.50')
+        .replace(/\b(uno|one)\s+(?:point\s+)?(bente\s+singko|twenty[\s-]*five)\b/g, '1.25')
+        .replace(/\b(uno|one)\s+(?:point\s+)?(setenta'?y?\s+singko|seventy[\s-]*five)\b/g, '1.75')
+        .replace(/\b(dos|two)\s+(?:point\s+)?(zero|flat)\b/g, '2.00')
+        .replace(/\b(uno|one)\s+(?:point\s+)?(zero|flat)\b/g, '1.00');
+
+    // Convert spoken "one point forty five" / "1 point 45" / "1 point 4 5"
+    const tensMap = {
+        ten: '10', eleven: '11', twelve: '12', thirteen: '13', fourteen: '14', fifteen: '15',
+        sixteen: '16', seventeen: '17', eighteen: '18', nineteen: '19',
+        twenty: '2', thirty: '3', forty: '4', fifty: '5', sixty: '6', seventy: '7', eighty: '8', ninety: '9'
+    };
+    const onesMap = {
+        zero: '0', oh: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9'
+    };
+
+    normalized = normalized.replace(
+        /\b(one|two|three|uno|dos|tres|[1-3])\s+point\s+([a-z0-9]+)(?:[\s-]+([a-z0-9]+))?\b/gi,
+        (full, wholeWord, dec1, dec2) => {
+            const wMap = { one: '1', uno: '1', two: '2', dos: '2', three: '3', tres: '3', '1': '1', '2': '2', '3': '3' };
+            const w = wMap[wholeWord.toLowerCase()];
+            if (!w) return full;
+            const d1 = dec1.toLowerCase();
+            const d2 = (dec2 || '').toLowerCase();
+            if (/^\d+$/.test(d1)) {
+                const digits = d2 && /^\d+$/.test(d2) ? `${d1}${d2}` : d1;
+                return `${w}.${digits}`;
+            }
+            if (tensMap[d1]) {
+                if (tensMap[d1].length === 2) return `${w}.${tensMap[d1]}`;
+                const secondDigit = onesMap[d2] || '0';
+                return `${w}.${tensMap[d1]}${secondDigit}`;
+            }
+            if (onesMap[d1] !== undefined) {
+                const secondDigit = onesMap[d2] !== undefined ? onesMap[d2] : '';
+                return `${w}.${onesMap[d1]}${secondDigit}`;
+            }
+            return full;
+        }
+    );
+
+    // Match explicit Philippine GWA decimals between 1.00 and 3.50 (e.g., 1.25, 1.48, 1.8, 2.15)
+    const gwaDecimalMatch = normalized.match(/\b([1-3])\.(\d{1,3})\b/);
+    if (gwaDecimalMatch) {
+        const val = parseFloat(`${gwaDecimalMatch[1]}.${gwaDecimalMatch[2]}`);
+        if (val >= 1.0 && val <= 4.0) {
+            return val.toFixed(2);
+        }
+    }
+
+    // Match percentage GWA if stated (e.g., "92.5%" or "GWA ko ay 91")
+    const pctMatch = normalized.match(/\b(8\d|9\d)(?:\.(\d{1,2}))?\s*%/);
+    if (pctMatch) {
+        return `${pctMatch[1]}${pctMatch[2] ? '.' + pctMatch[2] : ''}%`;
+    }
+
+    return 'Not Provided';
+}
+
+/**
+ * Helper: Extract Latin Honors accurately with clause-level negation awareness
+ */
+function parseLatinHonors(text = '') {
+    if (!text || !text.trim()) return 'None';
+
+    const clauses = text
+        .split(/(?:,|;|\.|!|\?|\bpero\b|\bngunit\b|\bsubalit\b|\bbut\b|\bhowever\b|\balthough\b)/i)
+        .map(c => c.trim())
+        .filter(Boolean);
+
+    const negationRegex = /\b(wala|walang|hindi|di\s+po|di\s+ako|not|no|none|without|kinulang|bitin|almost|halos)\b/i;
+
+    for (const clause of clauses) {
+        const isNegated = negationRegex.test(clause);
+        if (!isNegated) {
+            if (/\b(?:summa|suma)\s+cum\s+laude\b/i.test(clause)) return 'Summa Cum Laude';
+            if (/\bmagna\s+cum\s+laude\b/i.test(clause)) return 'Magna Cum Laude';
+            if (/\bcum\s+laude\b/i.test(clause)) return 'Cum Laude';
+            if (/\bacademic\s+distinction\b|\bwith\s+distinction\b/i.test(clause)) return 'With Academic Distinction';
+        }
+    }
+
+    return 'None';
+}
+
+/**
+ * Helper: Extract 1-5 ratings mentioned in a turn (backward-compatible wrapper around ratingExtractor)
  */
 function extractRatingsFromTurn(turnText = '', count = 1) {
     if (!turnText || !turnText.trim()) {
         return Array(count).fill(3);
     }
-
-    const normalized = turnText
-        .toLowerCase()
-        .replace(/\b(five|lima)\b/g, '5')
-        .replace(/\b(four|apat)\b/g, '4')
-        .replace(/\b(three|tatlo)\b/g, '3')
-        .replace(/\b(two|dalawa)\b/g, '2')
-        .replace(/\b(one|isa)\b/g, '1')
-        // Collapse "4 out of 5" or "4/5" or "4 over 5" to just the numerator "4"
-        .replace(/\b([1-5](?:\.\d)?)\s*(?:out\s+of|over|\/)\s*5\b/g, '$1');
-
-    const matches = normalized.match(/\b[1-5]\b/g);
-    if (matches && matches.length > 0) {
-        const nums = matches.map(n => Math.min(5, Math.max(1, parseInt(n, 10))));
-        const result = [];
-        for (let i = 0; i < count; i++) {
-            result.push(nums[i] !== undefined ? nums[i] : nums[nums.length - 1]);
-        }
-        return result;
-    }
-
-    // No explicit number stated — infer fairly from sentiment of that specific answer
-    const turnSent = analyzeSentiment(turnText);
-    let inferred = 3;
-    if (/\b(napakaganda|sobrang\s+ganda|excellent|outstanding|perfect|super\s+solid|5)\b/i.test(turnText)) {
-        inferred = 5;
-    } else if (turnSent.label === 'Positive') {
-        inferred = 4;
-    } else if (turnSent.label === 'Negative') {
-        inferred = 2;
-    }
-    return Array(count).fill(inferred);
+    const genericAspects = ['a1', 'a2', 'a3', 'a4'].slice(0, count);
+    const { ratings } = extractAspectRatings(turnText, genericAspects);
+    return genericAspects.map(k => ratings[k] ?? 3);
 }
 
 /**
@@ -261,31 +439,42 @@ export async function generateProgramHeadReply({
 }) {
     const studentTurns = conversationHistory.filter(t => t.sender === 'interviewee');
     const firstTurnText = studentTurns[0]?.text || '';
+    const secondTurnText = studentTurns[1]?.text || '';
 
     const studentName = parseGraduateName(firstTurnText);
-    const detectedProgram = parseDegreeProgram(studentTurns.map(t => t.text).join(' '));
+    const detectedProgram = parseDegreeProgram(`${secondTurnText} ${firstTurnText}`);
+    const detectedHonors = parseLatinHonors(secondTurnText);
     const greetingName = studentName ? `, ${studentName}` : '';
+
+    const honorsCongrats =
+        detectedHonors && detectedHonors !== 'None'
+            ? ` Binabati rin kita sa iyong pagtatapos bilang ${detectedHonors}!`
+            : '';
+
     const programPhrase = detectedProgram
         ? `Bilang alumnus ng ${detectedProgram.replace(/\s*\([^)]*\)/g, '')}, malaking karangalan na marinig ang iyong boses.`
         : `Malaking karangalan na marinig ang iyong karanasan bilang alumnus ng ating departamento.`;
 
     switch (currentStage) {
         case 2:
-            return `Salamat sa iyong pagpapakilala${greetingName}! ${programPhrase} Pag-usapan natin ang curriculum: sa institutional database natin, maraming alumni ang nagsabi na nakatulong ang foundational programming, habang marami rin ang nag-request ng Cloud at DevOps. Sa naging journey mo noon sa CCS, ano ang rating mo sa core programming at electives natin from 1 to 5, at aling tech stack ang pinaka-nakatulong o nais mong idagdag?`;
+            return `Salamat sa iyong pagpapakilala${greetingName}! Bago tayo dumako sa iyong mga karanasan sa kolehiyo, maaari mo bang ibahagi ang iyong tinapos na degree program, ang iyong college department, at ang iyong year of graduation? Kung natatandaan mo rin, ano ang iyong naging General Weighted Average o GWA, at nagtapos ka ba nang may Latin Honors gaya ng Cum Laude, Magna Cum Laude, o Summa Cum Laude?`;
 
         case 3:
-            return `Napakahalagang feedback niyan para sa aming curriculum review committee. Dumako naman tayo sa ating IT laboratory facilities—ang PC workstation specs, IDE software access, at campus Wi-Fi. Kumusta ang naging personal experience mo noon sa lab hardware at internet connectivity natin from 1 to 5, at ano ang naging pinakamalaking lab grievance o aberya na naranasan mo?`;
+            return `Maraming salamat sa pagbabahagi ng iyong academic profile!${honorsCongrats} ${programPhrase} Pag-usapan naman natin ang curriculum: sa institutional database natin, maraming alumni ang nagsabi na nakatulong ang foundational programming, habang marami rin ang nag-request ng Cloud at DevOps. Sa naging journey mo noon sa CCS, ano ang rating mo sa core programming at electives natin from 1 to 5, at aling tech stack ang pinaka-nakatulong o nais mong idagdag?`;
 
         case 4:
-            return `Naiintindihan ko po, at nakatala na iyan para sa ating laboratory infrastructure action plan. Pagdating naman sa naging Capstone Project mentorship at sa IT Internship practicum mo noon: gaano naging sapat ang technical guidance ng iyong capstone advisor at ang naging halaga ng practicum sa scale of 1 to 5?`;
+            return `Napakahalagang feedback niyan para sa aming curriculum review committee. Dumako naman tayo sa ating IT laboratory facilities—ang PC workstation specs, IDE software access, at campus Wi-Fi. Kumusta ang naging personal experience mo noon sa lab hardware at internet connectivity natin from 1 to 5, at ano ang naging pinakamalaking lab grievance o aberya na naranasan mo?`;
 
         case 5:
-            return `Salamat sa pagbabahagi niyan! Pag-usapan naman natin ang iyong career ngayon bilang alumnus: ano ang kasalukuyan mong employment status? Gaano kataas ang naging confidence mo sa pagharap sa technical coding interviews, at bukas ka ba na bumalik bilang alumni guest speaker o industry mentor sa CCS?`;
+            return `Naiintindihan ko po, at nakatala na iyan para sa ating laboratory infrastructure action plan. Pagdating naman sa naging Capstone Project at IT Internship mo noon: ano ang naging role mo sa inyong Capstone group, at gaano naging sapat ang technical guidance ng iyong capstone advisor pati na ang halaga ng practicum sa scale of 1 to 5?`;
 
         case 6:
-            return `Magandang marinig iyan! Bago tayo magtapos ng ating exit interview: sa buong pananatili mo noon sa CCS, ano ang pinaka-rewarding na breakthrough mo sa coding o capstone, anong proseso sa departamento ang nais mong ma-improve, at ano ang iyong golden advice para sa mga susunod na estudyante ng CCS?`;
+            return `Salamat sa pagbabahagi niyan! Pag-usapan naman natin ang iyong career ngayon bilang alumnus: ano ang kasalukuyan mong employment status? Gaano kataas ang naging confidence mo sa pagharap sa technical coding interviews, at bukas ka ba na bumalik bilang alumni guest speaker o industry mentor sa CCS?`;
 
         case 7:
+            return `Magandang marinig iyan! Bago tayo magtapos ng ating exit interview: sa buong pananatili mo noon sa CCS, ano ang pinaka-rewarding na breakthrough mo sa coding o capstone, anong proseso sa departamento ang nais mong ma-improve, at ano ang iyong golden advice para sa mga susunod na estudyante ng CCS?`;
+
+        case 8:
         default:
             return `Napakagandang payo at inspirasyon para sa ating mga estudyante${greetingName}! Sa ngalan ng buong faculty at pamunuan ng LSPU College of Computer Studies, taos-puso kaming nagpapasalamat sa iyong tapat na feedback at hangad namin ang patuloy mong tagumpay sa iyong karera bilang CCS alumnus. Ang iyong interview transcript ay matagumpay nang naitala sa database. Mabuhay ka!`;
     }
@@ -345,74 +534,88 @@ export async function extractAndSaveInterviewSession(conversationHistory = []) {
     const intervieweeTurns = conversationHistory.filter(t => t.sender === 'interviewee');
     const allStudentSpeech = intervieweeTurns.map(t => t.text).join(' ');
 
-    // Stage-mapped actual interviewee responses (A1 through A6)
+    // Stage-mapped actual interviewee responses (A1 through A7)
     const turn1Profile = (intervieweeTurns[0]?.text || '').trim();
-    const turn2Curriculum = (intervieweeTurns[1]?.text || '').trim();
-    const turn3Lab = (intervieweeTurns[2]?.text || '').trim();
-    const turn4Mentorship = (intervieweeTurns[3]?.text || '').trim();
-    const turn5Career = (intervieweeTurns[4]?.text || '').trim();
-    const turn6Reflections = (intervieweeTurns[5]?.text || '').trim();
+    const turn2Academic = (intervieweeTurns[1]?.text || '').trim();
+    const turn3Curriculum = (intervieweeTurns[2]?.text || '').trim();
+    const turn4Lab = (intervieweeTurns[3]?.text || '').trim();
+    const turn5Mentorship = (intervieweeTurns[4]?.text || '').trim();
+    const turn6Career = (intervieweeTurns[5]?.text || '').trim();
+    const turn7Reflections = (intervieweeTurns[6]?.text || '').trim();
 
-    // 1. Academic Profile (from actual student responses)
+    // 1. Academic Identity & Standing (from Stage 1 & Stage 2 responses)
     const studentName = parseGraduateName(turn1Profile) || 'Anonymous Graduate';
-    const studentId = parseSpokenStudentId(turn1Profile);
-    const program = parseDegreeProgram(allStudentSpeech) || 'BS in Information Technology (BSIT)';
+    const studentId = parseSpokenStudentId(`${turn1Profile} ${turn2Academic}`);
+    const program = parseDegreeProgram(`${turn2Academic} ${turn1Profile} ${allStudentSpeech}`) || 'BS in Information Technology (BSIT)';
+    const department = parseCollegeDepartment(`${turn2Academic} ${turn1Profile}`);
+    const graduationYear = parseGraduationYear(`${turn2Academic} ${turn1Profile}`);
+    const gwa = parseGWA(turn2Academic);
+    const latinHonors = parseLatinHonors(turn2Academic);
 
+    const roleSearchText = `${turn5Mentorship} ${allStudentSpeech}`;
     let capstoneRole = 'CCS Capstone Member';
-    if (/project\s+manager|\bpm\b|system\s*analyst/i.test(allStudentSpeech)) {
+    if (/project\s+manager|\bpm\b|system\s*analyst/i.test(roleSearchText)) {
         capstoneRole = 'Project Manager / System Analyst';
-    } else if (/\bqa\b|quality\s+assurance|tester|documentation/i.test(allStudentSpeech)) {
+    } else if (/\bqa\b|quality\s+assurance|tester|documentation/i.test(roleSearchText)) {
         capstoneRole = 'QA Tester / Technical Documentation Specialist';
-    } else if (/ui|ux|front\s*-?\s*end|designer/i.test(allStudentSpeech)) {
+    } else if (/ui|ux|front\s*-?\s*end|designer/i.test(roleSearchText)) {
         capstoneRole = 'UI/UX Designer / Frontend Developer';
-    } else if (/back\s*-?\s*end|database|sysadmin|devops/i.test(allStudentSpeech)) {
+    } else if (/back\s*-?\s*end|database|sysadmin|devops/i.test(roleSearchText)) {
         capstoneRole = 'Backend Developer / Database Administrator';
-    } else if (/lead|developer|programmer|coder|full\s*-?\s*stack/i.test(allStudentSpeech)) {
+    } else if (/lead|developer|programmer|coder|full\s*-?\s*stack/i.test(roleSearchText)) {
         capstoneRole = 'Lead Developer / Programmer';
     }
 
-    // 2. Ratings (parsed from the interviewee's actual answers in Stages 2, 3, and 4)
-    const [rateCore, rateElectives] = extractRatingsFromTurn(turn2Curriculum, 2);
-    const [rateHardware, rateSoftware, rateInternet, rateLabEnv] = extractRatingsFromTurn(turn3Lab, 4);
-    const [rateMentorship, rateInternship] = extractRatingsFromTurn(turn4Mentorship, 2);
+    // 2. Ratings (aspect-aware extraction with scale stripping, attribution, and sentiment fallback)
+    const { ratings: extractedRatings } = computeInterviewRatings({
+        curriculumAnswer: turn3Curriculum,
+        labsAnswer: turn4Lab,
+        mentorshipAnswer: turn5Mentorship
+    });
 
-    const overallAvg = parseFloat((
-        (rateCore + rateElectives + rateMentorship + rateInternship + rateHardware + rateSoftware + rateInternet + rateLabEnv) / 8
-    ).toFixed(2));
+    const rateCore = extractedRatings.coreProgramming;
+    const rateElectives = extractedRatings.electives;
+    const rateHardware = extractedRatings.hardware;
+    const rateSoftware = extractedRatings.software;
+    const rateInternet = extractedRatings.internet;
+    const rateLabEnv = extractedRatings.labEnvironment;
+    const rateMentorship = extractedRatings.mentorship;
+    const rateInternship = extractedRatings.internship;
+    const overallAvg = extractedRatings.overallAvg;
 
-    // 3. Tech Stack & Lab Feedback (verbatim from interviewee's Stage 2 & Stage 3 answers)
-    const knownTechMatches = (turn2Curriculum.match(/\b(Python|Java|JavaScript|TypeScript|SQL|MySQL|PostgreSQL|React|Vue|Angular|Node\.?js|PHP|Laravel|C\+\+|C#|HTML|CSS|Tailwind|Flutter|Kotlin|Swift|Git|GitHub|Docker|AWS|Azure|GCP|Kubernetes|Linux|Firebase|Supabase|MongoDB)\b/gi) || []);
+    // 3. Tech Stack & Lab Feedback (verbatim from interviewee's Stage 3 & Stage 4 answers)
+    const knownTechMatches = (turn3Curriculum.match(/\b(Python|Java|JavaScript|TypeScript|SQL|MySQL|PostgreSQL|React|Vue|Angular|Node\.?js|PHP|Laravel|C\+\+|C#|HTML|CSS|Tailwind|Flutter|Kotlin|Swift|Git|GitHub|Docker|AWS|Azure|GCP|Kubernetes|Linux|Firebase|Supabase|MongoDB)\b/gi) || []);
     const uniqueTech = Array.from(new Set(knownTechMatches.map(t => t)));
 
-    const usefulTech = turn2Curriculum || (uniqueTech.length > 0 ? uniqueTech.join(', ') : 'Not Specified');
-    const desiredTech = turn2Curriculum || 'See transcript (A2)';
-    const grievance = turn3Lab || 'None reported';
+    const usefulTech = turn3Curriculum || (uniqueTech.length > 0 ? uniqueTech.join(', ') : 'Not Specified');
+    const desiredTech = turn3Curriculum || 'See transcript (A3)';
+    const grievance = turn4Lab || 'None reported';
 
-    // 4. Career Outlook (mapped cleanly within VARCHAR(100) DB limits from Stage 5 answer)
+    // 4. Career Outlook (mapped cleanly from Stage 6 answer)
     let employmentStatus = 'Not Specified';
-    if (turn5Career) {
-        if (/freelanc|part\s*-?\s*time|contract/i.test(turn5Career)) {
+    if (turn6Career) {
+        if (/freelanc|part\s*-?\s*time|contract|raket|sideline/i.test(turn6Career)) {
             employmentStatus = 'Employed part-time / Freelancing';
-        } else if (/unemployed|wala\s+pa|applying|nag-?aapply|naghahanap|looking\s+for|job\s+hunting|fresh\s+grad/i.test(turn5Career)) {
-            employmentStatus = 'Unemployed but actively applying for tech positions';
-        } else if (/non\s*-?\s*it|ibang\s+field|bpo/i.test(turn5Career)) {
+        } else if (/unemployed|wala\s+pa|walang\s+trabaho|applying|nag-?aapply|naghahanap|looking\s+for|job\s+hunting|fresh\s+grad|kagagraduate|pahinga\s+muna/i.test(turn6Career)) {
+            employmentStatus = 'Unemployed / Actively Job Hunting';
+        } else if (/non\s*-?\s*it|ibang\s+field|bpo|call\s+center/i.test(turn6Career)) {
             employmentStatus = 'Employed full-time in a non-IT role';
-        } else if (/master|graduate|mscs|msit|certif/i.test(turn5Career)) {
+        } else if (/master|graduate\s+studies|mscs|msit|certif/i.test(turn6Career)) {
             employmentStatus = 'Pursuing graduate degrees / certifications';
-        } else if (/employ|working|may\s+trabaho|hired|developer|engineer|analyst|programmer|it\s+staff/i.test(turn5Career)) {
+        } else if (/employ|working|nagtatrabaho|may\s+trabaho|hired|developer|engineer|analyst|programmer|it\s+staff|specialist/i.test(turn6Career)) {
             employmentStatus = 'Employed full-time as a Tech Professional';
         } else {
-            employmentStatus = turn5Career.slice(0, 95);
+            employmentStatus = 'Not Explicitly Stated';
         }
     }
 
     let confidence = 'Not Specified';
-    if (turn5Career) {
-        if (/not\s+confident|hindi\s+(?:pa\s+)?confident|kinakabahan|kulang|mahirap/i.test(turn5Career)) {
+    if (turn6Career) {
+        if (/not\s+confident|hindi\s+(?:pa\s+)?confident|kinakabahan|kulang|mahirap/i.test(turn6Career)) {
             confidence = 'Not Confident';
-        } else if (/moderate|medyo|sakto|okay\s+lang|50|average/i.test(turn5Career)) {
+        } else if (/moderate|medyo|sakto|okay\s+lang|maayos\s+naman|50|average/i.test(turn6Career)) {
             confidence = 'Moderately Confident';
-        } else if (/very\s+confident|sobrang\s+confident|confident|handa|ready|kaya|kumpiyansa/i.test(turn5Career)) {
+        } else if (/very\s+confident|sobrang\s+confident|mataas.*confidence|confident|handa|ready|kaya|kumpiyansa/i.test(turn6Career)) {
             confidence = 'Very Confident';
         } else {
             confidence = 'Moderately Confident';
@@ -420,30 +623,30 @@ export async function extractAndSaveInterviewSession(conversationHistory = []) {
     }
 
     let guestSpeaker = 'Not Specified';
-    if (turn5Career) {
-        if (/\b(no|hindi|ayoko|pass)\b/i.test(turn5Career) && !/not\s+only/i.test(turn5Career)) {
+    if (turn6Career) {
+        if (/\b(no|hindi|ayoko|pass)\b/i.test(turn6Career) && !/not\s+only/i.test(turn6Career)) {
             guestSpeaker = 'No';
-        } else if (/\b(maybe|undecided|depende|siguro|tignan|not\s+sure)\b/i.test(turn5Career)) {
+        } else if (/\b(maybe|undecided|depende|siguro|tignan|not\s+sure)\b/i.test(turn6Career)) {
             guestSpeaker = 'Undecided';
-        } else if (/\b(yes|oo|opo|sure|definitely|willing|bukas|game|oo\s+naman)\b/i.test(turn5Career)) {
+        } else if (/\b(yes|oo|opo|sure|definitely|willing|bukas|game|oo\s+naman)\b/i.test(turn6Career)) {
             guestSpeaker = 'Yes';
         } else {
             guestSpeaker = 'Undecided';
         }
     }
 
-    // 5. Open-Ended Reflections (verbatim from Stage 6 answer, split by sentences if multi-part)
-    const reflectionSentences = turn6Reflections
-        ? turn6Reflections.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean)
+    // 5. Open-Ended Reflections (verbatim from Stage 7 answer, split by sentences if multi-part)
+    const reflectionSentences = turn7Reflections
+        ? turn7Reflections.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean)
         : [];
 
-    const breakthrough = reflectionSentences[0] || turn6Reflections || 'Not Specified';
+    const breakthrough = reflectionSentences[0] || turn7Reflections || 'Not Specified';
     const restructureSuggestion = reflectionSentences.length >= 3
         ? reflectionSentences[1]
-        : (turn6Reflections || 'See transcript (A6)');
+        : (turn7Reflections || 'See transcript (A7)');
     const legacyTip = reflectionSentences.length >= 2
         ? reflectionSentences[reflectionSentences.length - 1]
-        : (turn6Reflections || 'Not Specified');
+        : (turn7Reflections || 'Not Specified');
 
     // 6. Hybrid Sentiment Analysis on ONLY the interviewee's words + overall rating
     const lexicalSentiment = analyzeSentiment(allStudentSpeech);
@@ -460,7 +663,10 @@ export async function extractAndSaveInterviewSession(conversationHistory = []) {
         name: studentName.slice(0, 240),
         studentId: studentId.slice(0, 48),
         program: program.slice(0, 95),
-        graduationYear: '2026',
+        department: department.slice(0, 140),
+        graduationYear: graduationYear.slice(0, 18),
+        gwa: gwa.slice(0, 28),
+        latinHonors: latinHonors.slice(0, 75),
         capstoneRole: capstoneRole.slice(0, 95),
         ratings: {
             coreProgramming: rateCore,
@@ -487,6 +693,12 @@ export async function extractAndSaveInterviewSession(conversationHistory = []) {
             score: hybridScore
         },
         rawResponses: {
+            academicStanding: {
+                department,
+                graduationYear,
+                gwa,
+                latinHonors
+            },
             fullConversationTranscript: conversationHistory,
             formattedTranscript: formattedText,
             qaPairs: qaPairs,

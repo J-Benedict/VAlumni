@@ -544,10 +544,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
             isSubmittingTurnRef.current = false;
 
-            // Once Stage 1 profile answer is captured, pre-warm personalized Stage 7 closing in the background
+            // Once Stage 1 profile answer is captured, pre-warm personalized Stage 8 closing in the background
             if (nextStage === 2 && ttsEnabledRef.current) {
                 setTimeout(() => {
-                    prefetchStagesInBackground([7], selectedVoiceRef.current, updatedMessages);
+                    prefetchStagesInBackground([8], selectedVoiceRef.current, updatedMessages);
                 }, 1500);
             }
 
@@ -622,10 +622,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
             if (isUnmountedRef.current) return;
 
-            // Pre-synthesize deterministic middle stages (3, 4, 5, 6) in background after Stage 1 starts
+            // Pre-synthesize deterministic middle stages (4, 5, 6, 7) in background after Stage 1 starts
             if (ttsEnabledRef.current) {
                 setTimeout(() => {
-                    prefetchStagesInBackground([3, 4, 5, 6], selectedVoiceRef.current, []);
+                    prefetchStagesInBackground([4, 5, 6, 7], selectedVoiceRef.current, []);
                 }, 1200);
             }
 
@@ -686,7 +686,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
         // Warm upcoming stages for the newly selected voice
         setTimeout(() => {
-            prefetchStagesInBackground([3, 4, 5, 6], newVoice, messagesRef.current);
+            prefetchStagesInBackground([4, 5, 6, 7], newVoice, messagesRef.current);
         }, 1000);
 
         if (ttsEnabledRef.current && (turnStateRef.current === 'ai_speaking' || pendingTurnCommitRef.current)) {
@@ -1135,7 +1135,8 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         {completionRecord && (
                             <div className="p-4 rounded-2xl bg-[#1e1e1e] border border-white/10 text-left text-xs font-mono space-y-1.5 text-slate-300">
                                 <p><span className="text-slate-500">Alumnus:</span> <strong className="text-white">{completionRecord.name}</strong> ({completionRecord.studentId})</p>
-                                <p><span className="text-slate-500">Program:</span> {completionRecord.program}</p>
+                                <p><span className="text-slate-500">Degree &amp; Dept:</span> {completionRecord.program} • {completionRecord.department || 'CCS'}</p>
+                                <p><span className="text-slate-500">Batch &amp; GWA:</span> Class of {completionRecord.graduationYear} • GWA: <strong className="text-white">{completionRecord.gwa || 'Not Provided'}</strong>{completionRecord.latinHonors && completionRecord.latinHonors !== 'None' ? ` • 🏅 ${completionRecord.latinHonors}` : ''}</p>
                                 <p><span className="text-slate-500">Overall Rating:</span> <strong className="text-amber-300">{completionRecord.ratings?.overallAvg} / 5.0</strong></p>
                                 <p><span className="text-slate-500">Sentiment:</span> <span className="text-emerald-400 font-bold">{completionRecord.sentiment?.label}</span> ({completionRecord.sentiment?.score})</p>
                                 <p><span className="text-slate-500">Database ID:</span> {completionRecord.id}</p>

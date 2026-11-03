@@ -196,28 +196,33 @@ _SUPPORTS_LANG_DET_SEGMENTS = "language_detection_segments" in _MODEL_PARAMS
 # Stage-specific bilingual Taglish prompts & hotwords priming Whisper's decoder KV-cache for Filipino names & CCS vocabulary
 STAGE_DECODING_PROFILES = {
     1: (
-        "Magandang araw po, ang buong pangalan ko po at student ID bilang graduate ng BSIT at BSCS sa LSPU College of Computer Studies. "
+        "Magandang araw po, ako ay si Juan Dela Cruz at ang buong pangalan ko po at student ID bilang graduate sa LSPU. "
         "Surnames: Hornilla, Coronacion, Urrea, Dela Cruz, Bautista, Villanueva, Dimaculangan, Catapang, Macaraig, Agoncillo, Montecillo, Peñaranda, Eleazar, Tolentino, Quemada.",
-        "Hornilla Coronacion Urrea Dela Cruz Bautista Villanueva Dimaculangan Catapang Macaraig Agoncillo Peñaranda BSIT BSCS LSPU CCS",
+        "Hornilla Coronacion Urrea Dela Cruz Bautista Villanueva Dimaculangan Catapang Macaraig Agoncillo Peñaranda LSPU",
     ),
     2: (
+        "Nagtapos po ako ng Bachelor of Science in Information Technology o BSIT at BS in Computer Science o BSCS sa College of Computer Studies, CCS, LSPU noong year 2026. "
+        "Ang aking General Weighted Average o GWA ay 1.45, 1.50, 1.75, at nagtapos po ako bilang Cum Laude, Magna Cum Laude, Summa Cum Laude, o wala pong Latin Honors.",
+        "BSIT BSCS Bachelor of Science in Information Technology Computer Science College of Computer Studies CCS LSPU 2026 2025 GWA General Weighted Average Cum Laude Magna Cum Laude Summa Cum Laude Latin Honors",
+    ),
+    3: (
         "Sa core programming at electives ng CCS curriculum, ang rating ko ay 4 out of 5. "
         "Sa tech stack, nakatulong ang Python, Java, HTML, CSS, JavaScript, TypeScript, PHP, SQL, MySQL, PostgreSQL, C++, C#, React.js, Node.js, Laravel, Flutter, Docker, AWS, Cloud, at DevOps.",
         "core programming electives curriculum tech stack Python Java JavaScript TypeScript HTML CSS PHP SQL MySQL PostgreSQL React.js Node.js Laravel Flutter Docker AWS DevOps",
     ),
-    3: (
+    4: (
         "Sa IT laboratory facilities, PC workstation specs, RAM, SSD, IDE software gaya ng VS Code at Android Studio, campus Wi-Fi, internet connectivity, latency, at aircon, ang rating ko ay 4 out of 5.",
         "IT laboratory PC workstation hardware specs RAM SSD IDE VS Code Visual Studio Android Studio campus Wi-Fi internet connectivity latency boot time aircon grievance",
     ),
-    4: (
-        "Sa Capstone project mentorship, thesis, technical guidance ng adviser, deployment, defense, at IT internship practicum o OJT, ang rating ko ay 5 out of 5.",
-        "Capstone project thesis mentorship adviser technical guidance IT internship OJT practicum deployment defense",
-    ),
     5: (
+        "Sa Capstone project mentorship, thesis, role bilang Lead Developer o UI/UX Designer, technical guidance ng adviser, deployment, defense, at IT internship practicum o OJT, ang rating ko ay 5 out of 5.",
+        "Capstone project thesis mentorship adviser technical guidance Lead Developer UI/UX Designer QA Tester Project Manager IT internship OJT practicum deployment defense",
+    ),
+    6: (
         "Employed full-time na po ako bilang software developer, web developer, QA engineer, o data analyst. Mataas ang confidence ko sa technical coding interviews, at bukas po akong bumalik bilang alumni guest speaker o industry mentor sa CCS.",
         "employed full-time part-time freelancing software developer web developer QA engineer data analyst coding interview guest speaker industry mentor CCS",
     ),
-    6: (
+    7: (
         "Ang pinaka-rewarding breakthrough ko sa CCS ay debugging at deployment ng Capstone project. Sana ma-improve ang enrollment at defense schedule, at golden advice ko sa freshmen ay mag-aral ng Git, GitHub, version control, at portfolio.",
         "breakthrough debugging Capstone defense deployment enrollment grading freshmen Git GitHub version control portfolio self-study",
     ),

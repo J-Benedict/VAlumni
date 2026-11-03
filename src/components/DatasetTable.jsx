@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { getInterviewTranscriptsFromDB, deleteInterviewTranscriptFromDB } from '../utils/transcriptStorage';
 import { LSPU_SURVEY_STRUCTURE } from '../services/aiService';
+import { resolveSessionDisplayName } from '../services/conversationalAiService';
 import { Search, Download, Filter, User, Eye, X, CheckCircle2, AlertTriangle, FileSpreadsheet, Mic, Trash2, FileText, Calendar, Award, Star, Database, ArrowUpDown } from 'lucide-react';
 import Papa from 'papaparse';
 
@@ -21,6 +22,7 @@ export default function DatasetTable() {
     const [programFilter, setProgramFilter] = useState('ALL');
     const [sentimentFilter, setSentimentFilter] = useState('ALL');
     const [sortBy, setSortBy] = useState('NEWEST');
+    const [currentPage, setCurrentPage] = useState(1);
     const [selectedRecord, setSelectedRecord] = useState(null);
 
     // Load voice records on mount and refresh from PostgreSQL / API
@@ -38,6 +40,7 @@ export default function DatasetTable() {
         return voiceRecords.map((v, i) => ({
             ...v,
             realId: v.id, // preserved ID
+            name: resolveSessionDisplayName(v),
             id: v.id || `voice_${i + 1}`,
             email: v.email || 'voice-interview@lspu.edu.ph',
             source: 'voice_interview'
@@ -92,13 +95,166 @@ export default function DatasetTable() {
         });
     }, [records, searchTerm, programFilter, sentimentFilter, sortBy]);
 
+    // Pagination Configuration (10 entries per page, max 5 centered page numbers)
+    const ITEMS_PER_PAGE = 10;
+    const totalPages = Math.max(1, Math.ceil(filteredRecords.length / ITEMS_PER_PAGE));
+    const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, programFilter, sentimentFilter, sortBy]);
+
+    useEffect(() => {
+        if (currentPage !== safeCurrentPage) {
+            setCurrentPage(safeCurrentPage);
+        }
+    }, [currentPage, safeCurrentPage]);
+
+    const paginatedRecords = useMemo(() => {
+        const startIdx = (safeCurrentPage - 1) * ITEMS_PER_PAGE;
+        return filteredRecords.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+    }, [filteredRecords, safeCurrentPage]);
+
+    const visiblePageNumbers = useMemo(() => {
+        const maxVisible = 5;
+        if (totalPages <= maxVisible) {
+            return Array.from({ length: totalPages }, (_, i) => i + 1);
+        }
+        let start = safeCurrentPage - 2;
+        let end = safeCurrentPage + 2;
+        if (start < 1) {
+            start = 1;
+            end = maxVisible;
+        } else if (end > totalPages) {
+            end = totalPages;
+            start = totalPages - maxVisible + 1;
+        }
+        return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+    }, [safeCurrentPage, totalPages]);
+
+    const goToPage = (page) => {
+        setCurrentPage(Math.min(Math.max(1, page), totalPages));
+    };
+
+    const renderPaginationBar = (position) => {
+        if (filteredRecords.length === 0) return null;
+
+        const startEntry = (safeCurrentPage - 1) * ITEMS_PER_PAGE + 1;
+        const endEntry = Math.min(safeCurrentPage * ITEMS_PER_PAGE, filteredRecords.length);
+        const isFirstPage = safeCurrentPage === 1;
+        const isLastPage = safeCurrentPage === totalPages;
+
+        return (
+            <div
+                className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-2"
+                aria-label={`Dataset pagination ${position}`}
+            >
+                <div className="hidden sm:block text-xs font-mono text-slate-400">
+                    Showing <span className="font-bold text-slate-200">{startEntry}–{endEntry}</span> of{' '}
+                    <span className="font-bold text-slate-200">{filteredRecords.length}</span> entries
+                </div>
+
+                <div className="flex items-center justify-center gap-1.5 sm:gap-2">
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => goToPage(1)}
+                            disabled={isFirstPage}
+                            title="First Page"
+                            className={`min-w-[38px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isFirstPage
+                                    ? 'bg-slate-900/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                                    : 'bg-slate-900 hover:bg-indigo-600 text-slate-200 hover:text-white border-slate-700 hover:border-indigo-500 cursor-pointer'
+                            }`}
+                        >
+                            &lt;&lt;
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => goToPage(safeCurrentPage - 1)}
+                            disabled={isFirstPage}
+                            title="Previous Page"
+                            className={`min-w-[36px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isFirstPage
+                                    ? 'bg-slate-900/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                                    : 'bg-slate-900 hover:bg-indigo-600 text-slate-200 hover:text-white border-slate-700 hover:border-indigo-500 cursor-pointer'
+                            }`}
+                        >
+                            &lt;
+                        </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 px-1 sm:px-2">
+                        {visiblePageNumbers.map((pageNum) => {
+                            const isActive = pageNum === safeCurrentPage;
+                            return (
+                                <button
+                                    key={pageNum}
+                                    type="button"
+                                    onClick={() => goToPage(pageNum)}
+                                    aria-current={isActive ? 'page' : undefined}
+                                    title={`Page ${pageNum}`}
+                                    className={`min-w-[36px] h-9 px-3 rounded-xl font-mono text-xs transition-all select-none ${
+                                        isActive
+                                            ? 'bg-indigo-600 text-white font-extrabold border border-indigo-500 shadow-md shadow-indigo-600/30 ring-2 ring-indigo-400/40 scale-105 cursor-default'
+                                            : 'bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white font-semibold border border-slate-700 cursor-pointer'
+                                    }`}
+                                >
+                                    {pageNum}
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => goToPage(safeCurrentPage + 1)}
+                            disabled={isLastPage}
+                            title="Next Page"
+                            className={`min-w-[36px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isLastPage
+                                    ? 'bg-slate-900/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                                    : 'bg-slate-900 hover:bg-indigo-600 text-slate-200 hover:text-white border-slate-700 hover:border-indigo-500 cursor-pointer'
+                            }`}
+                        >
+                            &gt;
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => goToPage(totalPages)}
+                            disabled={isLastPage}
+                            title={`Last Page (Page ${totalPages})`}
+                            className={`min-w-[38px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isLastPage
+                                    ? 'bg-slate-900/50 text-slate-600 border-slate-800 cursor-not-allowed'
+                                    : 'bg-slate-900 hover:bg-indigo-600 text-slate-200 hover:text-white border-slate-700 hover:border-indigo-500 cursor-pointer'
+                            }`}
+                        >
+                            &gt;&gt;
+                        </button>
+                    </div>
+                </div>
+
+                <div className="hidden sm:block text-right text-xs font-mono text-slate-400">
+                    Page <span className="font-bold text-indigo-400">{safeCurrentPage}</span> of{' '}
+                    <span className="font-bold text-slate-200">{totalPages}</span>
+                </div>
+            </div>
+        );
+    };
+
     // CSV Export
     const exportCSV = () => {
         const csvStr = Papa.unparse(records.map(r => ({
             'Student ID': r.studentId,
+            'Database Source': r.dbSource || 'Database',
             'Full Name': r.name,
             'Degree Program': r.program,
             'Graduation Year': r.graduationYear,
+            'College Department': r.department || 'College of Computer Studies (CCS)',
+            'GWA': r.gwa || 'Not Provided',
+            'Latin Honors': r.latinHonors || 'None',
             'Capstone Role': r.capstoneRole,
             'Overall Rating (1-5)': r.ratings.overallAvg,
             'Core Programming Rating': r.ratings.coreProgramming,
@@ -200,6 +356,9 @@ export default function DatasetTable() {
                 </div>
             </div>
 
+            {/* Top Pagination Controls */}
+            {renderPaginationBar('top')}
+
             {/* Table of Records */}
             <div className="glass-panel rounded-3xl border border-slate-800 overflow-hidden">
                 <div className="overflow-x-auto">
@@ -227,13 +386,26 @@ export default function DatasetTable() {
                                     </td>
                                 </tr>
                             ) : (
-                                filteredRecords.map((r) => (
+                                paginatedRecords.map((r) => (
                                     <tr key={r.id} className="hover:bg-slate-900/50 transition-colors">
                                         <td className="p-4">
                                             <div className="font-bold text-white flex items-center gap-1.5">
                                                 {r.name}
                                                 {r.source === 'voice_interview' && (
                                                     <span className="px-1.5 py-0.5 rounded text-[9px] bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 font-mono">🎙️ Voice</span>
+                                                )}
+                                                {r.dbSource && (
+                                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${
+                                                        r.dbSource.includes('Cloud + SQLite')
+                                                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
+                                                            : r.dbSource.includes('Neon') || r.dbSource.includes('Cloud')
+                                                                ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                                                                : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                                    }`}>
+                                                        {r.dbSource.includes('Cloud + SQLite') ? '☁️ Neon + 📁 SQLite' :
+                                                         r.dbSource.includes('Neon') || r.dbSource.includes('Cloud') ? '☁️ Neon' :
+                                                         '📁 SQLite'}
+                                                    </span>
                                                 )}
                                             </div>
                                             <div className="text-[11px] text-indigo-400 font-mono">{r.studentId}</div>
@@ -285,6 +457,9 @@ export default function DatasetTable() {
                     </table>
                 </div>
             </div>
+
+            {/* Bottom Pagination Controls */}
+            {renderPaginationBar('bottom')}
 
             {/* Selected Record Modal / Full Transcript Viewer */}
             {selectedRecord && (

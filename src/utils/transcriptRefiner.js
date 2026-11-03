@@ -194,6 +194,10 @@ const DOMAIN_TERM_PATTERNS = [
     { pattern: /\b(?:dev\s+ops|deb\s+ops)\b/gi, replacement: 'DevOps' },
     { pattern: /\b(?:wi[\s-]*fi|why\s+fi|wai\s+fai)\b/gi, replacement: 'Wi-Fi' },
     { pattern: /\b(?:air\s+con|airkon)\b/gi, replacement: 'aircon' },
+    { pattern: /\b(?:g\.?\s*w\.?\s*a\.?|dji\s*dabolyu\s*ey|gee\s*double\s*u\s*ay)\b/gi, replacement: 'GWA' },
+    { pattern: /\b(?:summa|suma)\s+(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b/gi, replacement: 'Summa Cum Laude' },
+    { pattern: /\bmagna\s+(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b/gi, replacement: 'Magna Cum Laude' },
+    { pattern: /\b(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b/gi, replacement: 'Cum Laude' },
     { pattern: /\b(0\d{3})\s*(\d{4})\b/g, replacement: '$1-$2' }
 ];
 
@@ -292,7 +296,7 @@ export function refineNameSpan(nameSpan = '', mode = 'fullname') {
         .join(' ');
 }
 
-const INTRO_SPAN_REGEX = /(\b(?:ako\s+(?:po\s+)?si|ang\s+pangalan\s+ko\s+(?:po\s+)?ay|pangalan\s+ko\s+(?:po\s+)?ay|my\s+(?:full\s+)?name\s+is|i\s+am|i'm)\s+)([A-Za-zÑñÁÉÍÓÚáéíóú.\-\s]{2,48}?)(?=\s*(?:,|;|\.|!|\?|\bat\b|\band\b|\bang\b|\bmy\b|\bstudent\b|\bid\b|\bi\.d\b|\bfrom\b|\btaking\b|\bgraduate\b|\bgraduated\b|\balumnus\b|\bbsit\b|\bbscs\b|\bwala\b|\bhindi\b|\d|$))/gi;
+const INTRO_SPAN_REGEX = /(\b(?:ako\s+(?:po\s+)?(?:nga\s+pala\s+|pala\s+)?(?:ay\s+)?si|(?:ang\s+)?(?:aking\s+)?(?:buong\s+)?pangalan\s+(?:ko\s+)?(?:po\s+)?(?:ay|is|si)|ito\s+(?:po\s+)?si|my\s+(?:full\s+|complete\s+)?name\s+is|i\s+am|i'm|this\s+is)\s+)([A-Za-zÑñÁÉÍÓÚáéíóú.\-\s]{2,48}?)(?=\s*(?:,|;|\.|!|\?|\bat\b|\band\b|\bang\b|\baking\b|\bmy\b|\bstudent\b|\bid\b|\bi\.d\b|\bnumber\b|\bnoong\b|\bnoon\b|\bfrom\b|\btaking\b|\bgraduate\b|\bgraduated\b|\balumnus\b|\bbsit\b|\bbscs\b|\bwala\b|\bhindi\b|\bpo\s+(?:ito|ako|at|ang)\b|\d|$))/gi;
 
 export function refineTranscript(rawText = '', { stage = null, fieldHint = null } = {}) {
     if (!rawText || typeof rawText !== 'string') return '';

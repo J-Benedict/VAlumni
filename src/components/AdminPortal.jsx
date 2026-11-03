@@ -2,13 +2,14 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ccsLogo from '../../assets/ccs_logo.png';
 import { getInterviewTranscriptsFromDB, deleteInterviewTranscriptFromDB, clearAllTranscriptsFromDB } from '../utils/transcriptStorage';
 import { LSPU_SURVEY_STRUCTURE, generateThematicSummaries } from '../services/aiService';
+import { resolveSessionDisplayName } from '../services/conversationalAiService';
 import { AudioCleanerPipeline } from '../services/audioCleaner';
 import { refineTranscript } from '../utils/transcriptRefiner';
 import {
     Search, Download, Trash2, Eye, X, ArrowUpDown, Filter, Star,
     Calendar, Database, LogOut, BarChart3, ListFilter, Users, Smile,
     Award, Briefcase, TrendingUp, Sparkles, BookOpen, AlertTriangle,
-    CheckCircle2, FileText, ChevronRight, ShieldCheck,
+    CheckCircle2, FileText, ChevronLeft, ChevronRight, ShieldCheck, GraduationCap,
     Mic, MicOff, Settings, Volume2, VolumeX, Copy, Check, Radio, RefreshCw, Sliders
 } from 'lucide-react';
 import Papa from 'papaparse';
@@ -17,12 +18,21 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, Cartes
 /**
  * Extracts sequential Q&A pairs (Q1, A1, Q2, A2...) from any interview record.
  */
+function polishStage1Answer(pairs) {
+    return pairs.map(p => {
+        if (p.type === 'answer' && p.index === 1 && p.text) {
+            return { ...p, text: refineTranscript(p.text, { stage: 1 }) || p.text };
+        }
+        return p;
+    });
+}
+
 function getSessionQAPairs(session) {
     if (!session) return [];
 
     // Case 1: Session has explicit qaPairs in rawResponses
     if (session.rawResponses?.qaPairs && Array.isArray(session.rawResponses.qaPairs) && session.rawResponses.qaPairs.length > 0) {
-        return session.rawResponses.qaPairs;
+        return polishStage1Answer(session.rawResponses.qaPairs);
     }
 
     // Case 2: Session has fullConversationTranscript array
@@ -51,7 +61,7 @@ function getSessionQAPairs(session) {
                 });
             }
         });
-        if (pairs.length > 0) return pairs;
+        if (pairs.length > 0) return polishStage1Answer(pairs);
     }
 
     // Case 3: Session has rawResponses with survey question IDs
@@ -126,17 +136,106 @@ function formatSessionQAText(session) {
     return pairs.map(p => `${p.label}: ${p.text}`).join('\n\n');
 }
 
+/**
+ * Builds dynamic quick-jump stage pills matching either the 8-stage (7-answer) academic flow
+ * or legacy 6-answer conversational interview logs.
+ */
+function getDossierStages(qaPairs = []) {
+    if (!Array.isArray(qaPairs) || qaPairs.length === 0) return [];
+    const q2 = qaPairs.find(p => p.type === 'question' && p.index === 2);
+    const answerCount = qaPairs.filter(p => p.type === 'answer').length;
+    const isAcademicStandingFlow =
+        (q2 && /\b(gwa|general\s+weighted\s+average|latin\s+honors|cum\s+laude|college\s+department)\b/i.test(q2.text || '')) ||
+        answerCount >= 7;
+
+    const template = isAcademicStandingFlow
+        ? [
+              { qIndex: 1, label: '1. Identity' },
+              { qIndex: 2, label: '2. Academic' },
+              { qIndex: 3, label: '3. Curriculum' },
+              { qIndex: 4, label: '4. Labs' },
+              { qIndex: 5, label: '5. Mentorship' },
+              { qIndex: 6, label: '6. Career' },
+              { qIndex: 7, label: '7. Reflections' }
+          ]
+        : [
+              { qIndex: 1, label: '1. Profile' },
+              { qIndex: 2, label: '2. Curriculum' },
+              { qIndex: 3, label: '3. Labs' },
+              { qIndex: 4, label: '4. Mentorship' },
+              { qIndex: 5, label: '5. Career' },
+              { qIndex: 6, label: '6. Reflections' }
+          ];
+
+    return template.filter(stage => qaPairs.some(p => p.type === 'question' && p.index === stage.qIndex));
+}
+
+/**
+ * Sanitizes employment status labels so legacy records that stored a raw conversational sentence
+ * (e.g., confidence remarks) never render mid-sentence truncations.
+ */
+function normalizeEmploymentDisplay(status) {
+    if (!status || typeof status !== 'string' || status.trim() === '' || status.trim() === 'N/A') {
+        return 'Not Explicitly Stated';
+    }
+    const clean = status.trim();
+    if (/^(employed|unemployed|pursuing|freelancing|self-employed|not\s+explicitly\s+stated)/i.test(clean)) {
+        return clean;
+    }
+    if (/\b(unemployed|wala\s+pang\s+(?:work|trabaho)|applying|naghahanap|job\s+hunting|seeking)\b/i.test(clean)) {
+        return 'Unemployed / Actively Applying';
+    }
+    if (/\b(freelanc|part[\s-]*time|contract)\b/i.test(clean)) {
+        return 'Employed part-time / Freelancing';
+    }
+    if (/\b(employed|full[\s-]*time|working|may\s+trabaho|hired|developer|engineer|analyst|programmer)\b/i.test(clean)) {
+        return 'Employed full-time as a Tech Professional';
+    }
+    return 'Not Explicitly Stated';
+}
+
+/**
+ * Formats Guest Speaker / Mentor willingness into a crisp Yes / No / Undecided badge descriptor.
+ */
+function normalizeGuestSpeakerBadge(raw) {
+    const text = (raw || '').trim();
+    if (/\b(yes|oo|opo|willing|sure|bukas|open|game)\b/i.test(text) && !/\b(not\s+available|no\b|hindi)\b/i.test(text)) {
+        return {
+            short: 'Yes',
+            detail: 'Willing to serve as Guest Speaker / Mentor',
+            className: 'bg-emerald-100 text-emerald-800 border-emerald-200'
+        };
+    }
+    if (/^no\b|\b(not\s+available|hindi\s+muna|pass\s+muna)\b/i.test(text)) {
+        return {
+            short: 'No',
+            detail: 'Not available at this time',
+            className: 'bg-rose-100 text-rose-800 border-rose-200'
+        };
+    }
+    return {
+        short: 'Undecided',
+        detail: 'Open in the future / Undecided',
+        className: 'bg-amber-100 text-amber-800 border-amber-200'
+    };
+}
+
 export default function AdminPortal({ adminUser, onLogout }) {
     const [activeTab, setActiveTab] = useState('sessions'); // 'sessions' | 'analytics' | 'audio'
     const [transcripts, setTranscripts] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [programFilter, setProgramFilter] = useState('ALL');
     const [sentimentFilter, setSentimentFilter] = useState('ALL');
+    const [databaseFilter, setDatabaseFilter] = useState('ALL'); // 'ALL' | 'Cloud' | 'SQLite'
     const [sortBy, setSortBy] = useState('NEWEST');
+    const [currentPage, setCurrentPage] = useState(1);
     const [selectedSession, setSelectedSession] = useState(null);
+    const [activeStageJump, setActiveStageJump] = useState(1);
     const [sessionToDelete, setSessionToDelete] = useState(null);
     const [isDeleting, setIsDeleting] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+
+    const transcriptLogRef = useRef(null);
 
     // Audio Input Device State & Controls
     const [audioDevices, setAudioDevices] = useState([]);
@@ -174,28 +273,255 @@ export default function AdminPortal({ adminUser, onLogout }) {
     const filteredTranscripts = useMemo(() => {
         const filtered = transcripts.filter(t => {
             const term = searchTerm.toLowerCase();
+            const resolvedName = resolveSessionDisplayName(t);
             const matchesSearch =
-                (t.name || '').toLowerCase().includes(term) ||
+                resolvedName.toLowerCase().includes(term) ||
                 (t.studentId || '').toLowerCase().includes(term) ||
+                (t.program || '').toLowerCase().includes(term) ||
+                (t.department || '').toLowerCase().includes(term) ||
+                (t.latinHonors || '').toLowerCase().includes(term) ||
+                (t.gwa || '').toLowerCase().includes(term) ||
                 (t.usefulTech || '').toLowerCase().includes(term) ||
                 (t.grievance || '').toLowerCase().includes(term) ||
                 (t.capstoneRole || '').toLowerCase().includes(term);
 
             const matchesProg = programFilter === 'ALL' || (t.program || '').includes(programFilter);
             const matchesSent = sentimentFilter === 'ALL' || (t.sentiment?.label || '') === sentimentFilter;
+            const matchesDb =
+                databaseFilter === 'ALL'
+                    ? true
+                    : databaseFilter === 'Cloud'
+                        ? (t.dbSource && t.dbSource.includes('Cloud'))
+                        : databaseFilter === 'SQLite'
+                            ? (t.dbSource && t.dbSource.includes('SQLite'))
+                            : true;
 
-            return matchesSearch && matchesProg && matchesSent;
+            return matchesSearch && matchesProg && matchesSent && matchesDb;
         });
 
         return filtered.sort((a, b) => {
-            if (sortBy === 'AZ') return (a.name || '').localeCompare(b.name || '');
-            if (sortBy === 'ZA') return (b.name || '').localeCompare(a.name || '');
+            if (sortBy === 'AZ') return resolveSessionDisplayName(a).localeCompare(resolveSessionDisplayName(b));
+            if (sortBy === 'ZA') return resolveSessionDisplayName(b).localeCompare(resolveSessionDisplayName(a));
             if (sortBy === 'OLDEST') return new Date(a.timestamp || 0) - new Date(b.timestamp || 0);
             if (sortBy === 'NEWEST') return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
             if (sortBy === 'RATING_HIGH') return (b.ratings?.overallAvg || 0) - (a.ratings?.overallAvg || 0);
             return 0;
         });
-    }, [transcripts, searchTerm, programFilter, sentimentFilter, sortBy]);
+    }, [transcripts, searchTerm, programFilter, sentimentFilter, databaseFilter, sortBy]);
+
+    // Pagination Configuration (10 entries per page, max 5 visible page numbers centered on active page)
+    const ITEMS_PER_PAGE = 10;
+    const totalPages = Math.max(1, Math.ceil(filteredTranscripts.length / ITEMS_PER_PAGE));
+    const safeCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+
+    useEffect(() => {
+        setCurrentPage(1);
+    }, [searchTerm, programFilter, sentimentFilter, databaseFilter, sortBy]);
+
+    useEffect(() => {
+        if (currentPage !== safeCurrentPage) {
+            setCurrentPage(safeCurrentPage);
+        }
+    }, [currentPage, safeCurrentPage]);
+
+    const paginatedTranscripts = useMemo(() => {
+        const startIdx = (safeCurrentPage - 1) * ITEMS_PER_PAGE;
+        return filteredTranscripts.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+    }, [filteredTranscripts, safeCurrentPage]);
+
+    const visiblePageNumbers = useMemo(() => {
+        const maxVisible = 5;
+        if (totalPages <= maxVisible) {
+            return Array.from({ length: totalPages }, (_, i) => i + 1);
+        }
+        let start = safeCurrentPage - 2;
+        let end = safeCurrentPage + 2;
+        if (start < 1) {
+            start = 1;
+            end = maxVisible;
+        } else if (end > totalPages) {
+            end = totalPages;
+            start = totalPages - maxVisible + 1;
+        }
+        return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+    }, [safeCurrentPage, totalPages]);
+
+    const goToPage = (page) => {
+        setCurrentPage(Math.min(Math.max(1, page), totalPages));
+    };
+
+    // Selected Session Navigation (Previous / Next Alumnus inside Dossier Modal)
+    const selectedSessionIndex = useMemo(() => {
+        if (!selectedSession) return -1;
+        return filteredTranscripts.findIndex(t => t.id === selectedSession.id);
+    }, [selectedSession, filteredTranscripts]);
+
+    const hasPrevSession = selectedSessionIndex > 0;
+    const hasNextSession = selectedSessionIndex >= 0 && selectedSessionIndex < filteredTranscripts.length - 1;
+
+    const openDossierModal = (session) => {
+        setSelectedSession(session);
+        setActiveStageJump(1);
+    };
+
+    const navigateSelectedSession = (direction) => {
+        if (selectedSessionIndex < 0) return;
+        const nextIdx = selectedSessionIndex + direction;
+        if (nextIdx < 0 || nextIdx >= filteredTranscripts.length) return;
+        const nextRecord = filteredTranscripts[nextIdx];
+        setSelectedSession(nextRecord);
+        setActiveStageJump(1);
+        const targetPage = Math.floor(nextIdx / ITEMS_PER_PAGE) + 1;
+        if (targetPage !== currentPage) {
+            setCurrentPage(targetPage);
+        }
+        if (transcriptLogRef.current) {
+            transcriptLogRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+    };
+
+    const jumpToDossierStage = (qIndex) => {
+        setActiveStageJump(qIndex);
+        const container = transcriptLogRef.current;
+        if (!container) return;
+        const targetEl = container.querySelector(`#dossier-turn-Q${qIndex}`);
+        if (targetEl) {
+            targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    };
+
+    useEffect(() => {
+        if (!selectedSession || sessionToDelete) return;
+        const onKeyDown = (e) => {
+            if (e.key === 'ArrowLeft' && hasPrevSession) {
+                e.preventDefault();
+                navigateSelectedSession(-1);
+            } else if (e.key === 'ArrowRight' && hasNextSession) {
+                e.preventDefault();
+                navigateSelectedSession(1);
+            } else if (e.key === 'Escape') {
+                setSelectedSession(null);
+            }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [selectedSession, sessionToDelete, selectedSessionIndex, hasPrevSession, hasNextSession]);
+
+    const renderPaginationBar = (position) => {
+        if (filteredTranscripts.length === 0) return null;
+
+        const startEntry = (safeCurrentPage - 1) * ITEMS_PER_PAGE + 1;
+        const endEntry = Math.min(safeCurrentPage * ITEMS_PER_PAGE, filteredTranscripts.length);
+        const isFirstPage = safeCurrentPage === 1;
+        const isLastPage = safeCurrentPage === totalPages;
+
+        return (
+            <div
+                className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-2"
+                aria-label={`Pagination ${position}`}
+            >
+                <div className="hidden sm:block text-xs font-mono text-slate-500">
+                    Showing <span className="font-bold text-slate-700">{startEntry}–{endEntry}</span> of{' '}
+                    <span className="font-bold text-slate-700">{filteredTranscripts.length}</span> entries
+                </div>
+
+                {/* Centered << <  1 2 3 4 5  > >> Controls */}
+                <div className="flex items-center justify-center gap-1.5 sm:gap-2">
+                    {/* Left Navigation: First (<<) & Previous (<) */}
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => goToPage(1)}
+                            disabled={isFirstPage}
+                            title="First Page"
+                            aria-label="First Page"
+                            className={`min-w-[38px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isFirstPage
+                                    ? 'bg-white/50 text-slate-300 border-slate-200/70 cursor-not-allowed'
+                                    : 'bg-white hover:bg-orange-500 text-slate-700 hover:text-white border-orange-200 hover:border-orange-500 shadow-xs cursor-pointer'
+                            }`}
+                        >
+                            &lt;&lt;
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => goToPage(safeCurrentPage - 1)}
+                            disabled={isFirstPage}
+                            title="Previous Page"
+                            aria-label="Previous Page"
+                            className={`min-w-[36px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isFirstPage
+                                    ? 'bg-white/50 text-slate-300 border-slate-200/70 cursor-not-allowed'
+                                    : 'bg-white hover:bg-orange-500 text-slate-700 hover:text-white border-orange-200 hover:border-orange-500 shadow-xs cursor-pointer'
+                            }`}
+                        >
+                            &lt;
+                        </button>
+                    </div>
+
+                    {/* Clickable Page Numbers (up to 5, centered on current page) */}
+                    <div className="flex items-center gap-1.5 px-1 sm:px-2">
+                        {visiblePageNumbers.map((pageNum) => {
+                            const isActive = pageNum === safeCurrentPage;
+                            return (
+                                <button
+                                    key={pageNum}
+                                    type="button"
+                                    onClick={() => goToPage(pageNum)}
+                                    aria-current={isActive ? 'page' : undefined}
+                                    title={`Page ${pageNum}`}
+                                    className={`min-w-[36px] h-9 px-3 rounded-xl font-mono text-xs transition-all select-none ${
+                                        isActive
+                                            ? 'bg-orange-500 text-white font-extrabold border border-orange-600 shadow-md shadow-orange-500/30 ring-2 ring-orange-300/60 scale-105 cursor-default'
+                                            : 'bg-white hover:bg-orange-100 text-slate-700 hover:text-orange-900 font-semibold border border-orange-200/80 hover:border-orange-400 shadow-xs cursor-pointer'
+                                    }`}
+                                >
+                                    {pageNum}
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {/* Right Navigation: Next (>) & Last (>>) */}
+                    <div className="flex items-center gap-1.5">
+                        <button
+                            type="button"
+                            onClick={() => goToPage(safeCurrentPage + 1)}
+                            disabled={isLastPage}
+                            title="Next Page"
+                            aria-label="Next Page"
+                            className={`min-w-[36px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isLastPage
+                                    ? 'bg-white/50 text-slate-300 border-slate-200/70 cursor-not-allowed'
+                                    : 'bg-white hover:bg-orange-500 text-slate-700 hover:text-white border-orange-200 hover:border-orange-500 shadow-xs cursor-pointer'
+                            }`}
+                        >
+                            &gt;
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => goToPage(totalPages)}
+                            disabled={isLastPage}
+                            title={`Last Page (Page ${totalPages})`}
+                            aria-label="Last Page"
+                            className={`min-w-[38px] h-9 px-2.5 rounded-xl font-mono text-xs font-extrabold border transition-all select-none ${
+                                isLastPage
+                                    ? 'bg-white/50 text-slate-300 border-slate-200/70 cursor-not-allowed'
+                                    : 'bg-white hover:bg-orange-500 text-slate-700 hover:text-white border-orange-200 hover:border-orange-500 shadow-xs cursor-pointer'
+                            }`}
+                        >
+                            &gt;&gt;
+                        </button>
+                    </div>
+                </div>
+
+                <div className="hidden sm:block text-right text-xs font-mono text-slate-500">
+                    Page <span className="font-bold text-orange-700">{safeCurrentPage}</span> of{' '}
+                    <span className="font-bold text-slate-700">{totalPages}</span>
+                </div>
+            </div>
+        );
+    };
 
     // Open delete confirmation modal for a session
     const handleDeleteClick = (session, e) => {
@@ -236,15 +562,20 @@ export default function AdminPortal({ adminUser, onLogout }) {
 
     // Download formatted .txt file for thesis appendix / research data collection
     const handleDownloadTranscriptTxt = (session) => {
+        const resolvedName = resolveSessionDisplayName(session);
         const text = `=====================================================
 LSPU COLLEGE OF COMPUTER STUDIES (CCS)
 EXIT INTERVIEW VERBATIM TRANSCRIPT
 =====================================================
-Alumni Name: ${session.name || 'Anonymous'}
+Alumni Name: ${resolvedName}
 Student ID: ${session.studentId || 'Not Provided'}
 Degree Program: ${session.program || 'N/A'}
+College Department: ${session.department || 'College of Computer Studies (CCS)'}
 Graduation Year: ${session.graduationYear || '2026'}
+General Weighted Average (GWA): ${session.gwa || 'Not Provided'}
+Latin Honors: ${session.latinHonors || 'None'}
 Capstone Role: ${session.capstoneRole || 'N/A'}
+Employment Status: ${normalizeEmploymentDisplay(session.employmentStatus)}
 Recorded Timestamp: ${session.timestamp || new Date().toISOString()}
 Sentiment: ${session.sentiment?.label || 'Neutral'} (${Math.round((session.sentiment?.score || 0.5) * 100)}%)
 =====================================================
@@ -260,7 +591,7 @@ Generated by VAlumni Institutional Research Engine
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        const cleanName = (session.name || 'Alumni').replace(/[^a-zA-Z0-9]/g, '_');
+        const cleanName = (resolvedName || 'Alumni').replace(/[^a-zA-Z0-9]/g, '_');
         link.setAttribute('download', `Transcript_${session.studentId || 'session'}_${cleanName}.txt`);
         document.body.appendChild(link);
         link.click();
@@ -420,22 +751,31 @@ Generated by VAlumni Institutional Research Engine
 
         const csvData = transcripts.map(t => ({
             'Transcript ID': t.id,
+            'Database Storage Source': t.dbSource || 'Database',
             'Recorded Timestamp': t.timestamp,
             'Student ID': t.studentId,
-            'Alumni Name': t.name,
+            'Alumni Name': resolveSessionDisplayName(t),
             'Degree Program': t.program,
+            'College Department': t.department || 'College of Computer Studies (CCS)',
             'Graduation Year': t.graduationYear,
+            'GWA': t.gwa || 'Not Provided',
+            'Latin Honors': t.latinHonors || 'None',
             'Capstone Role': t.capstoneRole,
             'Overall Rating (1-5)': t.ratings?.overallAvg || 'N/A',
             'Core Programming': t.ratings?.coreProgramming || 'N/A',
+            'Electives': t.ratings?.electives || 'N/A',
             'Mentorship': t.ratings?.mentorship || 'N/A',
             'Internship': t.ratings?.internship || 'N/A',
             'Lab Hardware': t.ratings?.hardware || 'N/A',
+            'Lab Software': t.ratings?.software || 'N/A',
             'Campus Internet': t.ratings?.internet || 'N/A',
+            'Lab Environment': t.ratings?.labEnvironment || 'N/A',
             'Useful Tech Taught': t.usefulTech,
             'Missing Tech Desired': t.desiredTech,
             'Laboratory Grievances': t.grievance,
-            'Employment Status': t.employmentStatus,
+            'Employment Status': normalizeEmploymentDisplay(t.employmentStatus),
+            'Interview Confidence': t.confidence || 'N/A',
+            'Guest Speaker Willingness': t.guestSpeaker || 'Undecided',
             'Sentiment Label': t.sentiment?.label || 'Neutral',
             'Sentiment Score': t.sentiment?.score || '0.50',
             'Capstone Breakthrough': t.breakthrough,
@@ -729,8 +1069,26 @@ Generated by VAlumni Institutional Research Engine
                                     <option value="Neutral">Neutral</option>
                                     <option value="Negative">Negative / Grievance</option>
                                 </select>
+
+                                {/* Database Source Filter */}
+                                <div className="flex items-center space-x-1.5 px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-700 text-xs font-mono">
+                                    <Database className="w-3.5 h-3.5 text-orange-600 shrink-0" />
+                                    <select
+                                        value={databaseFilter}
+                                        onChange={(e) => setDatabaseFilter(e.target.value)}
+                                        className="bg-transparent text-slate-700 text-xs font-mono focus:outline-none cursor-pointer"
+                                        title="Filter records by storage database"
+                                    >
+                                        <option value="ALL">All Databases (Neon & SQLite)</option>
+                                        <option value="Cloud">Neon.tech Cloud</option>
+                                        <option value="SQLite">Local SQLite</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
+
+                        {/* Top Pagination Controls */}
+                        {renderPaginationBar('top')}
 
                         {/* Sessions Table */}
                         <div className="sunset-card rounded-2xl overflow-hidden border border-orange-200/70 shadow-md">
@@ -756,67 +1114,105 @@ Generated by VAlumni Institutional Research Engine
                                                     <p className="text-xs text-slate-500 max-w-sm mx-auto">
                                                         {searchTerm
                                                             ? "No records match your search criteria. Try clearing filters."
-                                                            : "Complete an exit interview session from the landing page to save entries into PostgreSQL."}
+                                                            : "Complete an exit interview session from the landing page to save entries into PostgreSQL or SQLite."}
                                                     </p>
                                                 </td>
                                             </tr>
                                         ) : (
-                                            filteredTranscripts.map((session) => (
-                                                <tr key={session.id} className="hover:bg-orange-50/50 transition-colors">
-                                                    <td className="p-4">
-                                                        <div className="font-bold text-slate-900">
-                                                            {session.name}
-                                                        </div>
-                                                        <div className="text-[11px] text-orange-700 font-mono font-medium">
-                                                            {session.studentId}
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-4 text-slate-700 font-mono text-[11px]">
-                                                        {session.program} ({session.graduationYear})
-                                                    </td>
-                                                    <td className="p-4 text-slate-700 font-medium">{session.capstoneRole}</td>
-                                                    <td className="p-4 font-mono font-bold text-amber-700">
-                                                        {session.ratings?.overallAvg || '0.0'} / 5.0
-                                                    </td>
-                                                    <td className="p-4 text-slate-700 text-[11px] max-w-xs truncate">
-                                                        {session.employmentStatus || 'N/A'}
-                                                    </td>
-                                                    <td className="p-4">
-                                                        <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${session.sentiment?.label === 'Positive'
-                                                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                                                                : session.sentiment?.label === 'Negative'
-                                                                    ? 'bg-rose-100 text-rose-800 border border-rose-200'
-                                                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
-                                                            }`}>
-                                                            {session.sentiment?.label || 'Neutral'}
-                                                        </span>
-                                                    </td>
-                                                    <td className="p-4 text-center">
-                                                        <div className="flex items-center justify-center space-x-1.5">
-                                                            <button
-                                                                onClick={() => setSelectedSession(session)}
-                                                                className="p-2 rounded-xl bg-orange-100 hover:bg-orange-500 text-orange-800 hover:text-white transition-all cursor-pointer"
-                                                                title="Inspect Individual Session & Sentiment"
-                                                            >
-                                                                <Eye className="w-4 h-4" />
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={(e) => handleDeleteClick(session, e)}
-                                                                className="p-2 rounded-xl bg-slate-100 hover:bg-rose-600 text-slate-500 hover:text-white transition-all cursor-pointer"
-                                                                title="Delete Session From Database"
-                                                            >
-                                                                <Trash2 className="w-4 h-4" />
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))
+                                            paginatedTranscripts.map((session) => {
+                                                const displayName = resolveSessionDisplayName(session);
+                                                const cleanEmployment = normalizeEmploymentDisplay(session.employmentStatus);
+                                                const hasHonors = session.latinHonors && session.latinHonors !== 'None';
+                                                return (
+                                                    <tr key={session.id} className="hover:bg-orange-50/50 transition-colors">
+                                                        <td className="p-4">
+                                                            <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                                                                <span>{displayName}</span>
+                                                                <span
+                                                                    className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                                                        session.dbSource?.includes('Cloud + SQLite')
+                                                                            ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                                                                            : session.dbSource?.includes('Neon') || session.dbSource?.includes('Cloud')
+                                                                                ? 'bg-sky-100 text-sky-800 border border-sky-200'
+                                                                                : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                                                    }`}
+                                                                    title={`Database location: ${session.dbSource}`}
+                                                                >
+                                                                    {session.dbSource === 'Cloud + SQLite'
+                                                                        ? '☁️ Neon + 📁 SQLite'
+                                                                        : session.dbSource?.includes('Neon') || session.dbSource?.includes('Cloud')
+                                                                            ? '☁️ Neon Cloud'
+                                                                            : '📁 Local SQLite'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-[11px] text-orange-700 font-mono font-medium">
+                                                                {session.studentId}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4 text-slate-700 font-mono text-[11px] space-y-1">
+                                                            <div>{session.program} ({session.graduationYear})</div>
+                                                            {(hasHonors || (session.gwa && session.gwa !== 'Not Provided')) && (
+                                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                                    {session.gwa && session.gwa !== 'Not Provided' && (
+                                                                        <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold">
+                                                                            GWA: {session.gwa}
+                                                                        </span>
+                                                                    )}
+                                                                    {hasHonors && (
+                                                                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
+                                                                            🏅 {session.latinHonors}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="p-4 text-slate-700 font-medium">{session.capstoneRole}</td>
+                                                        <td className="p-4 font-mono font-bold text-amber-700">
+                                                            {session.ratings?.overallAvg || '0.0'} / 5.0
+                                                        </td>
+                                                        <td className="p-4 text-slate-700 text-[11px] max-w-xs truncate">
+                                                            {cleanEmployment}
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${session.sentiment?.label === 'Positive'
+                                                                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                                                    : session.sentiment?.label === 'Negative'
+                                                                        ? 'bg-rose-100 text-rose-800 border border-rose-200'
+                                                                        : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                                                }`}>
+                                                                {session.sentiment?.label || 'Neutral'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            <div className="flex items-center justify-center space-x-1.5">
+                                                                <button
+                                                                    onClick={() => openDossierModal(session)}
+                                                                    className="p-2 rounded-xl bg-orange-100 hover:bg-orange-500 text-orange-800 hover:text-white transition-all cursor-pointer"
+                                                                    title="Open Institutional Dossier & Transcript"
+                                                                >
+                                                                    <Eye className="w-4 h-4" />
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={(e) => handleDeleteClick(session, e)}
+                                                                    className="p-2 rounded-xl bg-slate-100 hover:bg-rose-600 text-slate-500 hover:text-white transition-all cursor-pointer"
+                                                                    title="Delete Session From Database"
+                                                                >
+                                                                    <Trash2 className="w-4 h-4" />
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
                                         )}
                                     </tbody>
                                 </table>
                             </div>
                         </div>
+
+                        {/* Bottom Pagination Controls */}
+                        {renderPaginationBar('bottom')}
                     </div>
                 )}
 
@@ -1140,194 +1536,440 @@ Generated by VAlumni Institutional Research Engine
                     </div>
                 )}
 
-                {/* INDIVIDUAL SESSION INSPECTOR MODAL */}
-                {selectedSession && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
+                {/* WIDE SPLIT-SCREEN INSTITUTIONAL DOSSIER MODAL (OPTION B) */}
+                {selectedSession && (() => {
+                    const dossierName = resolveSessionDisplayName(selectedSession);
+                    const qaList = getSessionQAPairs(selectedSession);
+                    const dossierStages = getDossierStages(qaList);
+                    const answerCount = qaList.filter(p => p.type === 'answer').length;
+                    const cleanEmployment = normalizeEmploymentDisplay(selectedSession.employmentStatus);
+                    const guestSpeakerInfo = normalizeGuestSpeakerBadge(selectedSession.guestSpeaker);
+                    const hasHonors = selectedSession.latinHonors && selectedSession.latinHonors !== 'None';
+                    const sentimentLabel = selectedSession.sentiment?.label || 'Neutral';
+                    const sentimentPct = Math.round((selectedSession.sentiment?.score ?? 0.5) * 100);
+                    const ratingBreakdown = [
+                        { label: 'Core Prog', score: selectedSession.ratings?.coreProgramming || 0 },
+                        { label: 'Electives', score: selectedSession.ratings?.electives || 0 },
+                        { label: 'Mentorship', score: selectedSession.ratings?.mentorship || 0 },
+                        { label: 'OJT', score: selectedSession.ratings?.internship || 0 },
+                        { label: 'Hardware', score: selectedSession.ratings?.hardware || 0 },
+                        { label: 'Software', score: selectedSession.ratings?.software || 0 },
+                        { label: 'Wi-Fi', score: selectedSession.ratings?.internet || 0 },
+                        { label: 'Lab Env', score: selectedSession.ratings?.labEnvironment || 0 }
+                    ];
+
+                    return (
                         <div
-                            className="relative w-full max-w-3xl h-[88vh] max-h-[750px] rounded-3xl bg-white/95 backdrop-blur-xl p-6 md:p-8 border border-orange-200 shadow-2xl shadow-orange-950/20 text-slate-800 flex flex-col space-y-5 overflow-hidden"
-                            onClick={(e) => e.stopPropagation()}
+                            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200"
+                            onClick={() => setSelectedSession(null)}
                         >
-                            {/* Modal Header */}
-                            <div className="flex items-start justify-between border-b border-orange-100 pb-4 shrink-0">
-                                <div>
-                                    <h3 className="text-2xl font-serif font-bold text-slate-900">{selectedSession.name}</h3>
-                                    <p className="text-xs text-orange-700 font-mono mt-1">
-                                        Student ID: {selectedSession.studentId} • Program: {selectedSession.program} ({selectedSession.graduationYear})
-                                    </p>
-                                    {selectedSession.timestamp && (
-                                        <p className="text-[11px] text-slate-400 font-mono flex items-center gap-1 mt-1">
-                                            <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                                            Recorded on: {new Date(selectedSession.timestamp).toLocaleString()}
-                                        </p>
-                                    )}
-                                </div>
-
-                                <div className="flex items-center space-x-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => handleCopyTranscript(selectedSession)}
-                                        className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-900 text-xs font-mono font-semibold transition-all cursor-pointer"
-                                        title="Copy sequential Q&A transcript (Q1, A1, Q2, A2...) to clipboard"
-                                    >
-                                        {copiedSessionId === selectedSession.id ? (
-                                            <>
-                                                <Check className="w-3.5 h-3.5 text-emerald-600" />
-                                                <span>Copied!</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <Copy className="w-3.5 h-3.5 text-orange-700" />
-                                                <span>Copy Q&amp;A</span>
-                                            </>
-                                        )}
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        onClick={() => handleDownloadTranscriptTxt(selectedSession)}
-                                        className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-mono font-semibold transition-all cursor-pointer shadow-xs"
-                                        title="Download full verbatim transcript as .txt file"
-                                    >
-                                        <Download className="w-3.5 h-3.5 text-amber-300" />
-                                        <span>Download .txt</span>
-                                    </button>
-
-                                    <button
-                                        type="button"
-                                        onClick={() => setSelectedSession(null)}
-                                        className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-orange-50 cursor-pointer"
-                                        title="Close Preview"
-                                    >
-                                        <X className="w-5 h-5" />
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Session Quick Metrics */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono text-xs shrink-0">
-                                <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
-                                    <div className="text-slate-500 text-[10px] uppercase">Overall Score:</div>
-                                    <div className="text-amber-700 font-bold text-base flex items-center gap-1">
-                                        <Star className="w-4 h-4 fill-amber-500 text-amber-500" />
-                                        {selectedSession.ratings?.overallAvg || '0.0'} / 5.0
+                            <div
+                                className="relative w-full max-w-5xl h-[92vh] max-h-[840px] rounded-3xl bg-[#fdfaf5] p-5 md:p-7 border border-orange-200/90 shadow-2xl shadow-orange-950/20 text-slate-800 flex flex-col gap-4 overflow-hidden"
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                {/* Top Dossier Header & Alumnus Prev/Next Switcher */}
+                                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-orange-200/70 pb-3.5 shrink-0">
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <h3 className="text-xl sm:text-2xl font-serif font-bold text-slate-900">
+                                                {dossierName}
+                                            </h3>
+                                            {hasHonors && (
+                                                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                                                    🏅 {selectedSession.latinHonors}
+                                                </span>
+                                            )}
+                                            <span
+                                                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                                                    selectedSession.dbSource?.includes('Cloud + SQLite')
+                                                        ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                                                        : selectedSession.dbSource?.includes('Neon') || selectedSession.dbSource?.includes('Cloud')
+                                                            ? 'bg-sky-100 text-sky-800 border border-sky-200'
+                                                            : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                                }`}
+                                            >
+                                                {selectedSession.dbSource === 'Cloud + SQLite'
+                                                    ? '☁️ Neon Cloud + 📁 Local SQLite'
+                                                    : selectedSession.dbSource?.includes('Neon') || selectedSession.dbSource?.includes('Cloud')
+                                                        ? '☁️ Neon.tech Cloud'
+                                                        : '📁 Local SQLite'}
+                                            </span>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-mono text-orange-700 mt-1">
+                                            <span>Student ID: <strong>{selectedSession.studentId || 'Not Provided'}</strong></span>
+                                            <span className="text-orange-300">•</span>
+                                            <span>Program: <strong>{selectedSession.program || 'BS in Information Technology (BSIT)'}</strong></span>
+                                            <span className="text-orange-300">•</span>
+                                            <span>Class of <strong>{selectedSession.graduationYear || '2026'}</strong></span>
+                                            {selectedSession.timestamp && (
+                                                <>
+                                                    <span className="text-orange-300">•</span>
+                                                    <span className="text-slate-500 flex items-center gap-1">
+                                                        <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                                        Recorded on: {new Date(selectedSession.timestamp).toLocaleString()}
+                                                    </span>
+                                                </>
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
-                                <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
-                                    <div className="text-slate-500 text-[10px] uppercase">Capstone Role:</div>
-                                    <div className="text-slate-900 font-bold text-sm truncate">{selectedSession.capstoneRole}</div>
-                                </div>
-                                <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
-                                    <div className="text-slate-500 text-[10px] uppercase">Employment:</div>
-                                    <div className={`font-bold text-sm truncate ${isEmployed(selectedSession.employmentStatus) ? 'text-emerald-700' : 'text-slate-700'
-                                        }`}>
-                                        {selectedSession.employmentStatus}
-                                    </div>
-                                </div>
-                                <div className="p-3 rounded-xl bg-orange-50/70 border border-orange-100">
-                                    <div className="text-slate-500 text-[10px] uppercase">Sentiment Analysis:</div>
-                                    <div className={`font-bold text-sm ${selectedSession.sentiment?.label === 'Positive'
-                                            ? 'text-emerald-700'
-                                            : selectedSession.sentiment?.label === 'Negative'
-                                                ? 'text-rose-700'
-                                                : 'text-amber-700'
-                                        }`}>
-                                        {selectedSession.sentiment?.label || 'Neutral'} ({Math.round((selectedSession.sentiment?.score || 0.5) * 100)}%)
-                                    </div>
-                                </div>
-                            </div>
 
-                            {/* Sentiment Gauge Card */}
-                            <div className="p-4 rounded-2xl bg-orange-50/40 border border-orange-200/60 space-y-2 shrink-0">
-                                <div className="flex items-center justify-between text-xs font-mono">
-                                    <span className="font-bold text-slate-700">Sentiment Polarity Gauge:</span>
-                                    <span className="font-bold text-orange-700">
-                                        {selectedSession.sentiment?.label || 'Neutral'} ({selectedSession.sentiment?.score ? (selectedSession.sentiment.score * 100).toFixed(0) : 50}% Positivity)
-                                    </span>
-                                </div>
-                                <div className="h-3 w-full bg-slate-200 rounded-full overflow-hidden flex">
-                                    <div
-                                        className="h-full bg-gradient-to-r from-amber-400 to-emerald-500 transition-all duration-300"
-                                        style={{ width: `${Math.max(8, Math.min(100, (selectedSession.sentiment?.score || 0.5) * 100))}%` }}
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Complete Question-by-Question Transcribed Q&A Log */}
-                            <div className="flex-1 min-h-0 flex flex-col space-y-3 pt-1">
-                                <div className="flex items-center justify-between border-b border-orange-100 pb-2 shrink-0">
-                                    <div className="flex items-center space-x-2 text-xs font-mono text-orange-800">
-                                        <FileText className="w-4 h-4 text-orange-600" />
-                                        <span className="font-bold uppercase tracking-wider">Verbatim Transcribed Interview Log</span>
-                                    </div>
-                                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-200">
-                                        Sequential Q&amp;A Data Collection
-                                    </span>
-                                </div>
-
-                                <div className="flex-1 min-h-0 overflow-y-auto pr-1.5 space-y-3">
-                                    {(() => {
-                                        const qaList = getSessionQAPairs(selectedSession);
-                                        if (qaList.length > 0) {
-                                            return qaList.map((turn, idx) => (
-                                                <div
-                                                    key={idx}
-                                                    className={`p-3.5 rounded-xl border space-y-1.5 transition-all ${
-                                                        turn.type === 'question'
-                                                            ? 'bg-amber-50/70 border-amber-200/80 text-slate-800'
-                                                            : 'bg-white border-orange-200 text-slate-900 shadow-xs'
+                                    {/* Right Controls: Alumnus Navigation + Export + Close */}
+                                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                        {filteredTranscripts.length > 1 && selectedSessionIndex >= 0 && (
+                                            <div className="flex items-center bg-white border border-orange-200 rounded-xl p-0.5 shadow-2xs mr-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => navigateSelectedSession(-1)}
+                                                    disabled={!hasPrevSession}
+                                                    title="Previous Alumnus (← Left Arrow)"
+                                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all select-none ${
+                                                        hasPrevSession
+                                                            ? 'text-slate-800 hover:bg-orange-500 hover:text-white cursor-pointer'
+                                                            : 'text-slate-300 cursor-not-allowed'
                                                     }`}
                                                 >
-                                                    <div className="flex items-center justify-between">
-                                                        <span
-                                                            className={`font-mono font-bold text-[11px] px-2.5 py-0.5 rounded-md ${
-                                                                turn.type === 'question'
-                                                                    ? 'bg-amber-200 text-amber-900'
-                                                                    : 'bg-orange-500 text-white'
-                                                            }`}
-                                                        >
-                                                            {turn.label} • {turn.speaker}
-                                                        </span>
-                                                        {turn.timestamp && (
-                                                            <span className="text-[10px] font-mono text-slate-400">
-                                                                {turn.timestamp}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <p className={`text-xs leading-relaxed pt-1 ${
-                                                        turn.type === 'answer' ? 'font-medium text-slate-900' : 'text-slate-700'
-                                                    }`}>
-                                                        {turn.text}
-                                                    </p>
-                                                </div>
-                                            ));
-                                        }
+                                                    <ChevronLeft className="w-3.5 h-3.5" />
+                                                    <span>Prev</span>
+                                                </button>
+                                                <span className="px-2 text-[11px] font-mono font-bold text-orange-800 select-none">
+                                                    {selectedSessionIndex + 1} / {filteredTranscripts.length}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => navigateSelectedSession(1)}
+                                                    disabled={!hasNextSession}
+                                                    title="Next Alumnus (→ Right Arrow)"
+                                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold transition-all select-none ${
+                                                        hasNextSession
+                                                            ? 'text-slate-800 hover:bg-orange-500 hover:text-white cursor-pointer'
+                                                            : 'text-slate-300 cursor-not-allowed'
+                                                    }`}
+                                                >
+                                                    <span>Next</span>
+                                                    <ChevronRight className="w-3.5 h-3.5" />
+                                                </button>
+                                            </div>
+                                        )}
 
-                                        return (
-                                            <div className="space-y-2 text-xs">
-                                                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                                                    <span className="font-semibold text-orange-800">Useful Tech Taught: </span>
-                                                    <span className="text-slate-700 font-mono">{selectedSession.usefulTech}</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => handleCopyTranscript(selectedSession)}
+                                            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-orange-100 hover:bg-orange-200 text-orange-900 text-xs font-mono font-semibold transition-all cursor-pointer shadow-2xs"
+                                            title="Copy sequential Q&A transcript to clipboard"
+                                        >
+                                            {copiedSessionId === selectedSession.id ? (
+                                                <>
+                                                    <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                                    <span>Copied!</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Copy className="w-3.5 h-3.5 text-orange-700" />
+                                                    <span>Copy Q&amp;A</span>
+                                                </>
+                                            )}
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={() => handleDownloadTranscriptTxt(selectedSession)}
+                                            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-mono font-semibold transition-all cursor-pointer shadow-2xs"
+                                            title="Download full verbatim transcript as .txt file"
+                                        >
+                                            <Download className="w-3.5 h-3.5 text-amber-300" />
+                                            <span>Download .txt</span>
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={() => setSelectedSession(null)}
+                                            className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-orange-100 cursor-pointer transition-colors"
+                                            title="Close Institutional Dossier (Esc)"
+                                        >
+                                            <X className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Split-Screen Workspace: Left (~40% Profile & Scorecard) | Right (~60% Stage-Navigable Transcript) */}
+                                <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-5 overflow-y-auto lg:overflow-hidden">
+                                    {/* LEFT COLUMN: Alumni Academic Profile, Unified Scorecard & Career Readiness */}
+                                    <div className="lg:col-span-5 lg:overflow-y-auto lg:pr-1.5 space-y-3.5">
+                                        {/* 1. Graduate Academic Profile Card */}
+                                        <div className="rounded-2xl bg-[#fff5e9] border border-orange-200/80 p-4 space-y-3 shadow-2xs">
+                                            <div className="flex items-center justify-between border-b border-orange-200/60 pb-2">
+                                                <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-orange-900 flex items-center gap-1.5">
+                                                    <GraduationCap className="w-4 h-4 text-orange-600" />
+                                                    Graduate Academic Profile
+                                                </span>
+                                                <span className="text-[10px] font-mono font-semibold text-orange-700">
+                                                    Class of {selectedSession.graduationYear || '2026'}
+                                                </span>
+                                            </div>
+
+                                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Student ID</div>
+                                                    <div className="font-mono font-bold text-slate-900 mt-0.5">
+                                                        {selectedSession.studentId || 'Not Provided'}
+                                                    </div>
                                                 </div>
-                                                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                                                    <span className="font-semibold text-orange-800">Missing Tech Desired: </span>
-                                                    <span className="text-slate-700 font-mono">{selectedSession.desiredTech}</span>
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">GWA</div>
+                                                    <div className="font-mono font-bold text-slate-900 mt-0.5">
+                                                        {selectedSession.gwa || 'Not Provided'}
+                                                    </div>
                                                 </div>
-                                                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                                                    <span className="font-semibold text-rose-800">Laboratory Grievance: </span>
-                                                    <span className="text-slate-700 italic">"{selectedSession.grievance}"</span>
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60 col-span-2">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Degree Program &amp; Department</div>
+                                                    <div className="font-semibold text-slate-900 mt-0.5 leading-snug">
+                                                        {selectedSession.program || 'BS in Information Technology (BSIT)'}
+                                                    </div>
+                                                    <div className="text-[11px] text-slate-600 mt-0.5">
+                                                        {selectedSession.department || 'College of Computer Studies (CCS)'}
+                                                    </div>
                                                 </div>
-                                                <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                                                    <span className="font-semibold text-amber-800">Legacy Tip For Freshmen: </span>
-                                                    <span className="text-slate-700 italic">"{selectedSession.legacyTip}"</span>
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Latin Honors</div>
+                                                    <div className={`font-bold mt-0.5 ${hasHonors ? 'text-amber-800' : 'text-slate-700'}`}>
+                                                        {selectedSession.latinHonors || 'None'}
+                                                    </div>
+                                                </div>
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Capstone Role</div>
+                                                    <div className="font-semibold text-slate-900 mt-0.5 leading-snug">
+                                                        {selectedSession.capstoneRole || 'Software Developer / Member'}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        );
-                                    })()}
+                                        </div>
+
+                                        {/* 2. Unified Sentiment + Overall Rating & 8-Item Mini Breakdown */}
+                                        <div className="rounded-2xl bg-[#fff5e9] border border-orange-200/80 p-4 space-y-3 shadow-2xs">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div>
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Overall Satisfaction</div>
+                                                    <div className="text-xl font-serif font-extrabold text-amber-700 flex items-center gap-1.5 mt-0.5">
+                                                        <Star className="w-4 h-4 fill-amber-500 text-amber-500" />
+                                                        <span>{selectedSession.ratings?.overallAvg || '0.0'}</span>
+                                                        <span className="text-xs font-mono font-normal text-slate-500">/ 5.0</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="text-right">
+                                                    <div className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold">Sentiment Polarity</div>
+                                                    <span
+                                                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-mono font-bold mt-0.5 border ${
+                                                            sentimentLabel === 'Positive'
+                                                                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                                                : sentimentLabel === 'Negative'
+                                                                    ? 'bg-rose-100 text-rose-800 border-rose-300'
+                                                                    : 'bg-amber-100 text-amber-800 border-amber-300'
+                                                        }`}
+                                                    >
+                                                        {sentimentLabel} ({sentimentPct}%)
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            {/* Single Unified Sentiment Bar */}
+                                            <div className="h-2.5 w-full bg-orange-100/90 rounded-full overflow-hidden border border-orange-200/70">
+                                                <div
+                                                    className={`h-full rounded-full transition-all duration-300 ${
+                                                        sentimentLabel === 'Positive'
+                                                            ? 'bg-gradient-to-r from-amber-400 to-emerald-500'
+                                                            : sentimentLabel === 'Negative'
+                                                                ? 'bg-gradient-to-r from-rose-500 to-amber-400'
+                                                                : 'bg-gradient-to-r from-amber-300 to-amber-500'
+                                                    }`}
+                                                    style={{ width: `${Math.max(8, Math.min(100, sentimentPct))}%` }}
+                                                />
+                                            </div>
+
+                                            {/* 8-Item Mini Rating Breakdown */}
+                                            <div className="pt-1.5 border-t border-orange-200/60">
+                                                <div className="text-[10px] font-mono font-bold uppercase tracking-wider text-orange-900/70 mb-2">
+                                                    8-Item Institutional Rating Breakdown
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    {ratingBreakdown.map((item) => {
+                                                        const pct = Math.min(100, Math.max(0, (item.score / 5) * 100));
+                                                        const barColor =
+                                                            item.score >= 4
+                                                                ? 'bg-emerald-500'
+                                                                : item.score <= 2 && item.score > 0
+                                                                    ? 'bg-rose-500'
+                                                                    : 'bg-orange-500';
+                                                        return (
+                                                            <div
+                                                                key={item.label}
+                                                                className="p-2 rounded-xl bg-white/90 border border-orange-200/60 space-y-1"
+                                                            >
+                                                                <div className="flex items-center justify-between text-[11px] font-mono">
+                                                                    <span className="text-slate-700 font-semibold">{item.label}</span>
+                                                                    <span className="font-bold text-slate-900">
+                                                                        {item.score ? `${item.score}/5` : '—'}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="h-1.5 w-full bg-orange-100 rounded-full overflow-hidden">
+                                                                    <div
+                                                                        className={`h-full rounded-full ${barColor}`}
+                                                                        style={{ width: `${pct}%` }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* 3. Career Readiness & Alumni Engagement Pills */}
+                                        <div className="rounded-2xl bg-[#fff5e9] border border-orange-200/80 p-4 space-y-2.5 shadow-2xs">
+                                            <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-orange-900 flex items-center gap-1.5 border-b border-orange-200/60 pb-2">
+                                                <Briefcase className="w-3.5 h-3.5 text-orange-600" />
+                                                Career Readiness &amp; Alumni Engagement
+                                            </div>
+
+                                            <div className="space-y-2 text-xs">
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60 flex items-start justify-between gap-2">
+                                                    <span className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold shrink-0 pt-0.5">Employment</span>
+                                                    <span
+                                                        className={`font-semibold text-right leading-snug ${
+                                                            isEmployed(cleanEmployment) ? 'text-emerald-700' : 'text-slate-700'
+                                                        }`}
+                                                    >
+                                                        {cleanEmployment}
+                                                    </span>
+                                                </div>
+
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60 flex items-center justify-between gap-2">
+                                                    <span className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold shrink-0">Coding Interview</span>
+                                                    <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-800 border border-blue-200 font-mono text-[11px] font-bold text-right">
+                                                        {selectedSession.confidence || 'Moderately Confident'}
+                                                    </span>
+                                                </div>
+
+                                                <div className="p-2.5 rounded-xl bg-white/90 border border-orange-200/60 flex items-center justify-between gap-2">
+                                                    <span className="text-[10px] font-mono uppercase text-orange-900/60 font-semibold shrink-0">Guest Speaker</span>
+                                                    <span
+                                                        className={`px-2.5 py-0.5 rounded-full border font-mono text-[11px] font-bold ${guestSpeakerInfo.className}`}
+                                                        title={guestSpeakerInfo.detail}
+                                                    >
+                                                        {guestSpeakerInfo.short} • {guestSpeakerInfo.detail}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* RIGHT COLUMN: Stage-Navigable Conversational Transcript */}
+                                    <div className="lg:col-span-7 flex flex-col min-h-[420px] lg:min-h-0 rounded-2xl bg-[#fff5e9] border border-orange-200/80 p-4 shadow-2xs">
+                                        {/* Transcript Header + Quick-Jump Stage Pills */}
+                                        <div className="space-y-2.5 pb-3 border-b border-orange-200/70 shrink-0">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div className="flex items-center space-x-2 text-xs font-mono text-orange-900">
+                                                    <FileText className="w-4 h-4 text-orange-600" />
+                                                    <span className="font-bold uppercase tracking-wider">
+                                                        Stage-Navigable Conversational Transcript
+                                                    </span>
+                                                </div>
+                                                <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-white text-orange-800 border border-orange-200 font-semibold shadow-2xs">
+                                                    {answerCount > 0 ? `${answerCount} Spoken Responses` : 'Qualitative Summary'}
+                                                </span>
+                                            </div>
+
+                                            {dossierStages.length > 0 && (
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    {dossierStages.map((stage) => {
+                                                        const isActiveStage = activeStageJump === stage.qIndex;
+                                                        return (
+                                                            <button
+                                                                key={stage.qIndex}
+                                                                type="button"
+                                                                onClick={() => jumpToDossierStage(stage.qIndex)}
+                                                                className={`px-2.5 py-1 rounded-lg font-mono text-[11px] transition-all cursor-pointer select-none border ${
+                                                                    isActiveStage
+                                                                        ? 'bg-orange-500 text-white font-bold border-orange-600 shadow-xs'
+                                                                        : 'bg-white hover:bg-orange-100 text-slate-700 hover:text-orange-900 font-medium border-orange-200 shadow-2xs'
+                                                                }`}
+                                                            >
+                                                                {stage.label}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* Full-Height Scrollable Verbatim Q&A Log */}
+                                        <div
+                                            ref={transcriptLogRef}
+                                            className="flex-1 min-h-0 overflow-y-auto pr-1.5 pt-3 space-y-3 scroll-smooth"
+                                        >
+                                            {qaList.length > 0 ? (
+                                                qaList.map((turn, idx) => (
+                                                    <div
+                                                        key={idx}
+                                                        id={turn.type === 'question' ? `dossier-turn-Q${turn.index}` : `dossier-turn-A${turn.index}`}
+                                                        className={`p-3.5 rounded-xl border space-y-1.5 transition-all scroll-mt-2 ${
+                                                            turn.type === 'question'
+                                                                ? 'bg-amber-50/90 border-amber-200/80 text-slate-800'
+                                                                : 'bg-white border-orange-200/90 text-slate-900 shadow-2xs'
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center justify-between">
+                                                            <span
+                                                                className={`font-mono font-bold text-[11px] px-2.5 py-0.5 rounded-md ${
+                                                                    turn.type === 'question'
+                                                                        ? 'bg-amber-200 text-amber-900'
+                                                                        : 'bg-orange-500 text-white'
+                                                                }`}
+                                                            >
+                                                                {turn.label} • {turn.speaker}
+                                                            </span>
+                                                            {turn.timestamp && (
+                                                                <span className="text-[10px] font-mono text-slate-400">
+                                                                    {turn.timestamp}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <p
+                                                            className={`text-xs leading-relaxed pt-1 ${
+                                                                turn.type === 'answer' ? 'font-medium text-slate-900' : 'text-slate-700'
+                                                            }`}
+                                                        >
+                                                            {turn.text}
+                                                        </p>
+                                                    </div>
+                                                ))
+                                            ) : (
+                                                <div className="space-y-2 text-xs">
+                                                    <div className="p-3 rounded-xl bg-white border border-orange-200/80">
+                                                        <span className="font-semibold text-orange-800">Useful Tech Taught: </span>
+                                                        <span className="text-slate-700 font-mono">{selectedSession.usefulTech}</span>
+                                                    </div>
+                                                    <div className="p-3 rounded-xl bg-white border border-orange-200/80">
+                                                        <span className="font-semibold text-orange-800">Missing Tech Desired: </span>
+                                                        <span className="text-slate-700 font-mono">{selectedSession.desiredTech}</span>
+                                                    </div>
+                                                    <div className="p-3 rounded-xl bg-white border border-orange-200/80">
+                                                        <span className="font-semibold text-rose-800">Laboratory Grievance: </span>
+                                                        <span className="text-slate-700 italic">"{selectedSession.grievance}"</span>
+                                                    </div>
+                                                    <div className="p-3 rounded-xl bg-white border border-orange-200/80">
+                                                        <span className="font-semibold text-amber-800">Legacy Tip For Freshmen: </span>
+                                                        <span className="text-slate-700 italic">"{selectedSession.legacyTip}"</span>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                )}
+                    );
+                })()}
                 {/* CUSTOM DELETE CONFIRMATION MODAL */}
                 {sessionToDelete && (
                     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-fadeIn">
@@ -1342,7 +1984,7 @@ Generated by VAlumni Institutional Research Engine
                             <div className="space-y-2">
                                 <h3 className="text-lg font-serif font-bold text-slate-900">Delete Interview Session?</h3>
                                 <p className="text-xs text-slate-600 leading-relaxed">
-                                    Are you sure you want to delete the interview session for <strong className="text-slate-900">{sessionToDelete.name}</strong> ({sessionToDelete.studentId})? This will permanently remove the record from PostgreSQL.
+                                    Are you sure you want to delete the interview session for <strong className="text-slate-900">{resolveSessionDisplayName(sessionToDelete)}</strong> ({sessionToDelete.studentId})? This will permanently remove the record from both databases.
                                 </p>
                             </div>
 

@@ -232,6 +232,10 @@ DOMAIN_TERM_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"\b(?:dev\s+ops|deb\s+ops)\b", re.I), "DevOps"),
     (re.compile(r"\b(?:wi[\s-]*fi|why\s+fi|wai\s+fai)\b", re.I), "Wi-Fi"),
     (re.compile(r"\b(?:air\s+con|airkon)\b", re.I), "aircon"),
+    (re.compile(r"\b(?:g\.?\s*w\.?\s*a\.?|dji\s*dabolyu\s*ey|gee\s*double\s*u\s*ay)\b", re.I), "GWA"),
+    (re.compile(r"\b(?:summa|suma)\s+(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b", re.I), "Summa Cum Laude"),
+    (re.compile(r"\bmagna\s+(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b", re.I), "Magna Cum Laude"),
+    (re.compile(r"\b(?:cum|come|kam)\s+(?:laude|loudly|loud|laud)\b", re.I), "Cum Laude"),
     # Format 8-digit LSPU Student IDs (e.g. "01220345" or "0122 0345" -> "0122-0345")
     (re.compile(r"\b(0\d{3})\s*(\d{4})\b"), r"\1-\2"),
 ]
@@ -352,11 +356,14 @@ def refine_name_span(name_span: str, mode: str = "fullname") -> str:
 
 # Regex capturing explicit self-introduction spans in Taglish / Filipino / English
 _INTRO_SPAN_REGEX = re.compile(
-    r"(\b(?:ako\s+(?:po\s+)?si|ang\s+pangalan\s+ko\s+(?:po\s+)?ay|pangalan\s+ko\s+(?:po\s+)?ay|"
-    r"my\s+(?:full\s+)?name\s+is|i\s+am|i'm)\s+)"
+    r"(\b(?:ako\s+(?:po\s+)?(?:nga\s+pala\s+|pala\s+)?(?:ay\s+)?si|"
+    r"(?:ang\s+)?(?:aking\s+)?(?:buong\s+)?pangalan\s+(?:ko\s+)?(?:po\s+)?(?:ay|is|si)|"
+    r"ito\s+(?:po\s+)?si|"
+    r"my\s+(?:full\s+|complete\s+)?name\s+is|i\s+am|i'm|this\s+is)\s+)"
     r"([A-Za-zÑñÁÉÍÓÚáéíóú.\-\s]{2,48}?)"
-    r"(?=\s*(?:,|;|\.|!|\?|\bat\b|\band\b|\bang\b|\bmy\b|\bstudent\b|\bid\b|\bi\.d\b|"
-    r"\bfrom\b|\btaking\b|\bgraduate\b|\bgraduated\b|\balumnus\b|\bbsit\b|\bbscs\b|\bwala\b|\bhindi\b|\d|$))",
+    r"(?=\s*(?:,|;|\.|!|\?|\bat\b|\band\b|\bang\b|\baking\b|\bmy\b|\bstudent\b|\bid\b|\bi\.d\b|\bnumber\b|"
+    r"\bnoong\b|\bnoon\b|\bfrom\b|\btaking\b|\bgraduate\b|\bgraduated\b|\balumnus\b|\bbsit\b|\bbscs\b|"
+    r"\bwala\b|\bhindi\b|\bpo\s+(?:ito|ako|at|ang)\b|\d|$))",
     re.I,
 )
 
