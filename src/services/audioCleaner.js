@@ -104,8 +104,8 @@ export class AudioCleanerPipeline {
         this.options = {
             silenceTimeoutMs: options.silenceTimeoutMs || 1550,
             longTurnSilenceTimeoutMs: options.longTurnSilenceTimeoutMs || 1950,
-            speechThreshold: options.speechThreshold || 15,
-            minSpeechDurationMs: options.minSpeechDurationMs || 650,
+            speechThreshold: options.speechThreshold || 24,
+            minSpeechDurationMs: options.minSpeechDurationMs || 550,
             preRollMs: options.preRollMs || 600,
             tailPadMs: options.tailPadMs || 500,
             chunkMinDurationSec: options.chunkMinDurationSec || 7.5,
@@ -148,9 +148,20 @@ export class AudioCleanerPipeline {
         this.speechStartTime = 0;
         this.silenceStartTime = 0;
         this.calibrationSamples = [];
+        this.noiseFloor = 10;
+        this.peakSpeechVolume = 0;
         this.dynamicSpeechThreshold = this.options.speechThreshold;
         this.isProcessing = false;
         this.animFrameId = null;
+    }
+
+    /**
+     * Dynamically updates the ambient noise speech threshold.
+     */
+    setSpeechThreshold(newThreshold) {
+        const clamped = Math.max(8, Math.min(75, Number(newThreshold) || 24));
+        this.options.speechThreshold = clamped;
+        this.dynamicSpeechThreshold = Math.max(clamped, Math.min(62, (this.noiseFloor || 0) + 10));
     }
 
     /**
@@ -245,6 +256,8 @@ export class AudioCleanerPipeline {
             this.analyser = this.audioContext.createAnalyser();
             this.analyser.fftSize = 1024;
             this.analyser.smoothingTimeConstant = 0.3;
+            this.analyser.minDecibels = -85;
+            this.analyser.maxDecibels = -20;
 
             // 8. Lossless PCM Capture Tap (2048 samples/frame connected to muted sink)
             if (this.audioContext.createScriptProcessor) {
@@ -345,7 +358,9 @@ export class AudioCleanerPipeline {
         this.speechStartTime = 0;
         this.silenceStartTime = 0;
         this.calibrationSamples = [];
-        this.dynamicSpeechThreshold = this.options.speechThreshold || 15;
+        this.noiseFloor = 10;
+        this.peakSpeechVolume = 0;
+        this.dynamicSpeechThreshold = this.options.speechThreshold || 24;
 
         this.preRollChunks = [];
         this.preRollSampleCount = 0;
@@ -425,16 +440,23 @@ export class AudioCleanerPipeline {
         }
 
         // Dynamic ambient noise-floor calibration over initial quiet frames
-        if (!this.hasSpoken && this.calibrationSamples.length < 20 && volume < 35) {
+        if (!this.hasSpoken && this.calibrationSamples.length < 25 && volume < 60) {
             this.calibrationSamples.push(volume);
             const sorted = [...this.calibrationSamples].sort((a, b) => a - b);
             const medianFloor = sorted[Math.floor(sorted.length / 2)] || 0;
-            this.dynamicSpeechThreshold = Math.max(this.options.speechThreshold || 15, medianFloor + 9);
+            this.noiseFloor = medianFloor;
+            this.dynamicSpeechThreshold = Math.max(this.options.speechThreshold || 24, Math.min(62, medianFloor + 12));
         }
 
-        const speechThreshold = this.dynamicSpeechThreshold || this.options.speechThreshold || 15;
+        const startThreshold = this.dynamicSpeechThreshold || this.options.speechThreshold || 24;
+        if (this.hasSpoken) {
+            this.peakSpeechVolume = Math.max(this.peakSpeechVolume, volume);
+        }
+        const effectiveThreshold = this.hasSpoken
+            ? Math.max(startThreshold, Math.min(55, Math.round(this.peakSpeechVolume * 0.5)))
+            : startThreshold;
 
-        if (volume >= speechThreshold) {
+        if (volume >= effectiveThreshold) {
             this.isCurrentlySpeaking = true;
             this.activeSpeechFrames += 1;
             this.totalSpeechFrames += 1;
@@ -444,6 +466,7 @@ export class AudioCleanerPipeline {
                 this.hasSpoken = true;
                 this.speechStartTime = now;
                 this.silenceStartTime = 0;
+                this.peakSpeechVolume = volume;
                 this.hasVoicedInCurrentSegment = true;
                 this.voicedFramesInCurrentSegment = this.activeSpeechFrames;
 
@@ -462,17 +485,17 @@ export class AudioCleanerPipeline {
                 this.voicedFramesInCurrentSegment += 1;
             }
 
-            if (this.hasSpoken && this.activeSpeechFrames >= 4) {
+            if (this.hasSpoken && this.activeSpeechFrames >= 7) {
                 this.silenceStartTime = 0;
             }
         } else {
             this.isCurrentlySpeaking = false;
             this.activeSpeechFrames = 0;
 
-            if (this.hasSpoken && this.totalSpeechFrames >= 12) {
+            if (this.hasSpoken && this.totalSpeechFrames >= 10) {
                 const speechDuration = now - this.speechStartTime;
 
-                if (speechDuration >= (this.options.minSpeechDurationMs || 650)) {
+                if (speechDuration >= (this.options.minSpeechDurationMs || 550)) {
                     // Adaptive VAD: fast 1.55s cutoff for concise turns; 1.95s breathing room for multi-sentence long answers
                     const adaptiveSilenceMs = speechDuration >= 4500
                         ? (this.options.longTurnSilenceTimeoutMs || 1950)

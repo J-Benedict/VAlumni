@@ -167,18 +167,25 @@ export default function AdminLoginModal({ isOpen, onClose, onLoginSuccess }) {
                             Admin Password
                         </label>
                         <input
-                            type="password"
+                            type="text"
                             name="valumni_portal_secret"
                             required
                             readOnly={!isInputReady}
                             onPointerDown={() => setIsInputReady(true)}
                             onKeyDown={() => setIsInputReady(true)}
-                            autoComplete="new-password"
+                            autoComplete="off"
+                            autoCorrect="off"
+                            autoCapitalize="off"
+                            spellCheck={false}
+                            aria-autocomplete="none"
+                            data-1p-ignore="true"
+                            data-bwignore="true"
                             data-lpignore="true"
                             data-form-type="other"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             placeholder="••••••••"
+                            style={{ WebkitTextSecurity: password ? 'disc' : 'none' }}
                             className="w-full px-4 py-3 rounded-2xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-500 transition-all"
                         />
                     </div>

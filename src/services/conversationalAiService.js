@@ -89,7 +89,7 @@ export const INTERVIEW_DOMAINS = [
         stage: 1,
         name: "Welcome & Alumni Identity",
         goals: "Welcome graduated alumnus warmly, ask for Full Name and optional Student ID number if remembered.",
-        starterMessage: "Magandang araw! Ako ang Program Head ng College of Computer Studies sa LSPU. Unang-una, maligayang pagbati bilang ganap na graduate at alumnus ng ating kolehiyo! Bilang bahagi ng ating alumni exit interview, nais naming marinig ang iyong naging karanasan noong nag-aaral ka pa upang patuloy na mapabuti ang ating departamento. Bago tayo magsimula, maaari mo bang sabihin ang iyong buong pangalan? At if possible, can you also share your student id if you still remember it?"
+        starterMessage: "Magandang araw! Ako ang AI Interview Assistant ng College of Computer Studies sa LSPU. Unang-una, maligayang pagbati bilang ganap na graduate at alumnus ng ating kolehiyo! Bilang bahagi ng ating alumni exit interview, nais naming marinig ang iyong naging karanasan noong nag-aaral ka pa upang patuloy na mapabuti ang ating departamento. Bago tayo magsimula, maaari mo bang sabihin ang iyong buong pangalan? At if possible, can you also share your student id if you still remember it?"
     },
     {
         stage: 2,

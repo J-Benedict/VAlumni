@@ -2,12 +2,14 @@ import React from 'react';
 
 /**
  * High-fidelity SVG Avatars matching the design mockup:
- * - Program Head: CCS faculty attire (royal blue suit, red tie, white shirt, neat dark hair)
- * - Interviewee: Graduating student (mortarboard cap with gold tassel, dark graduation gown)
+ * - Program Head: CCS faculty attire, adapts Male (Angelo) or Female (Rose) based on selected TTS voice
+ * - Interviewee: Gender-neutral graduating student (mortarboard cap with gold tassel, dark graduation gown)
  * Both avatars feature dynamic speaking/listening wave animations and live volume reactivity.
  */
 
-export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size = 180 }) {
+export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size = 180, gender = 'male' }) {
+    const isFemale = gender === 'female';
+
     return (
         <div className="flex flex-col items-center select-none group">
             {/* Avatar Container with Animated Aura */}
@@ -28,7 +30,7 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                     <div className="absolute -inset-1.5 rounded-full border-2 border-amber-400/60 animate-spin border-t-transparent pointer-events-none" />
                 )}
 
-                {/* SVG Illustration of CCS Program Head */}
+                {/* SVG Illustration of CCS Program Head (Male or Female) */}
                 <svg
                     viewBox="0 0 200 200"
                     width={size}
@@ -55,6 +57,21 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                         </filter>
                     </defs>
 
+                    {/* Long Dark Hair Back Layer (Female / Rose) */}
+                    {isFemale && (
+                        <g>
+                            <path
+                                d="M 48 88 C 44 128 48 162 58 175 L 142 175 C 152 162 156 128 152 88 C 150 48 128 34 100 34 C 72 34 50 48 48 88 Z"
+                                fill="#263238"
+                            />
+                            <path
+                                d="M 54 96 C 50 132 54 158 64 170 L 136 170 C 146 158 150 132 146 96 Z"
+                                fill="#37474F"
+                                opacity="0.55"
+                            />
+                        </g>
+                    )}
+
                     {/* Suit Body / Shoulders */}
                     <g filter="url(#phShadow)">
                         {/* Suit Shoulders */}
@@ -62,7 +79,7 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                             d="M 30 195 C 32 145 65 130 100 130 C 135 130 168 145 170 195 Z"
                             fill="url(#phSuitGrad)"
                         />
-                        {/* White Dress Shirt V-Neck */}
+                        {/* White Dress Shirt / Blouse V-Neck */}
                         <polygon
                             points="82,130 118,130 100,172"
                             fill="#FFFFFF"
@@ -76,16 +93,36 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                             points="122,130 100,154 106,130"
                             fill="#ECEFF1"
                         />
-                        {/* Red Necktie Knot */}
-                        <polygon
-                            points="94,146 106,146 103,158 97,158"
-                            fill="#B71C1C"
-                        />
-                        {/* Red Necktie Body */}
-                        <polygon
-                            points="96,158 104,158 107,195 100,200 93,195"
-                            fill="url(#phTieGrad)"
-                        />
+                        {isFemale ? (
+                            /* Neat Crimson Faculty Ascot / Ribbon Bow (Female / Rose) */
+                            <g>
+                                <polygon
+                                    points="88,144 100,152 86,162"
+                                    fill="url(#phTieGrad)"
+                                />
+                                <polygon
+                                    points="112,144 100,152 114,162"
+                                    fill="url(#phTieGrad)"
+                                />
+                                <polygon
+                                    points="96,154 104,154 106,174 100,178 94,174"
+                                    fill="#C62828"
+                                />
+                                <circle cx="100" cy="151" r="5" fill="#B71C1C" />
+                            </g>
+                        ) : (
+                            /* Classic Red Necktie (Male / Angelo) */
+                            <g>
+                                <polygon
+                                    points="94,146 106,146 103,158 97,158"
+                                    fill="#B71C1C"
+                                />
+                                <polygon
+                                    points="96,158 104,158 107,195 100,200 93,195"
+                                    fill="url(#phTieGrad)"
+                                />
+                            </g>
+                        )}
                         {/* Suit Lapel Left */}
                         <path
                             d="M 68 135 L 85 168 L 78 195 L 42 195 C 46 160 58 142 68 135 Z"
@@ -119,9 +156,19 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                     <circle cx="118" cy="86" r="5" fill="#212121" />
                     <circle cx="116" cy="84" r="1.5" fill="#FFFFFF" />
 
-                    {/* Eyebrows */}
-                    <path d="M 75 76 Q 82 72 90 76" stroke="#37474F" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-                    <path d="M 110 76 Q 118 72 125 76" stroke="#37474F" strokeWidth="2.5" strokeLinecap="round" fill="none" />
+                    {/* Subtle Eyelashes & Arched Eyebrows for Female (Rose) */}
+                    {isFemale ? (
+                        <g>
+                            <path d="M 76 82 L 79 84 M 124 82 L 121 84" stroke="#212121" strokeWidth="1.8" strokeLinecap="round" />
+                            <path d="M 74 75 Q 82 69 91 74" stroke="#37474F" strokeWidth="2.2" strokeLinecap="round" fill="none" />
+                            <path d="M 109 74 Q 118 69 126 75" stroke="#37474F" strokeWidth="2.2" strokeLinecap="round" fill="none" />
+                        </g>
+                    ) : (
+                        <g>
+                            <path d="M 75 76 Q 82 72 90 76" stroke="#37474F" strokeWidth="2.5" strokeLinecap="round" fill="none" />
+                            <path d="M 110 76 Q 118 72 125 76" stroke="#37474F" strokeWidth="2.5" strokeLinecap="round" fill="none" />
+                        </g>
+                    )}
 
                     {/* Pleasant Smile / Speaking Mouth */}
                     {isSpeaking ? (
@@ -133,15 +180,32 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
                         <path d="M 91 104 Q 100 112 109 104" stroke="#8D6E63" strokeWidth="2.5" strokeLinecap="round" fill="none" />
                     )}
 
-                    {/* Hair - Neat Professional Side-part */}
-                    <path
-                        d="M 56 80 C 56 46 75 38 100 38 C 125 38 144 46 144 80 C 138 68 128 60 110 60 C 85 60 70 66 56 80 Z"
-                        fill="#263238"
-                    />
-                    <path
-                        d="M 58 76 C 65 52 88 44 114 46 C 98 48 80 58 74 72 Z"
-                        fill="#37474F"
-                    />
+                    {/* Hair Front Layer */}
+                    {isFemale ? (
+                        <g>
+                            {/* Styled Swept Feminine Front Bangs Framing Forehead & Temples */}
+                            <path
+                                d="M 55 86 C 54 48 75 36 100 36 C 125 36 146 48 145 86 C 142 70 132 58 112 56 C 95 62 72 64 55 86 Z"
+                                fill="#263238"
+                            />
+                            <path
+                                d="M 58 80 C 66 52 90 44 120 46 C 102 52 80 62 64 78 Z"
+                                fill="#37474F"
+                            />
+                        </g>
+                    ) : (
+                        <g>
+                            {/* Neat Professional Side-part (Male / Angelo) */}
+                            <path
+                                d="M 56 80 C 56 46 75 38 100 38 C 125 38 144 46 144 80 C 138 68 128 60 110 60 C 85 60 70 66 56 80 Z"
+                                fill="#263238"
+                            />
+                            <path
+                                d="M 58 76 C 65 52 88 44 114 46 C 98 48 80 58 74 72 Z"
+                                fill="#37474F"
+                            />
+                        </g>
+                    )}
                 </svg>
 
                 {/* Live Speech Wave Indicator */}
@@ -157,7 +221,7 @@ export function ProgramHeadAvatar({ isSpeaking = false, isThinking = false, size
 
             {/* Label Underneath */}
             <span className="mt-3 text-lg md:text-xl font-bold font-sans tracking-wide text-white drop-shadow-md">
-                Program Head
+                AI Interview Assistant
             </span>
             <span className="text-[11px] font-mono text-slate-400">
                 CCS Exit Interviewer
@@ -257,39 +321,25 @@ export function IntervieweeAvatar({ isListening = false, volumeLevel = 0, size =
                     <circle cx="60" cy="94" r="9" fill="#FFB300" />
                     <circle cx="140" cy="94" r="9" fill="#FFB300" />
 
-                    {/* Head / Face */}
+                    {/* Head / Face (Gender-Neutral Graduate Silhouette) */}
                     <circle cx="100" cy="96" r="42" fill="url(#ieSkinGrad)" filter="url(#ieShadow)" />
 
-                    {/* Brown Layered Hair */}
-                    <path
-                        d="M 60 90 C 58 70 70 56 100 56 C 130 56 142 70 140 90 C 136 84 130 80 120 78 C 108 76 92 76 80 78 C 70 80 64 84 60 90 Z"
-                        fill="#5D4037"
-                    />
-                    {/* Hair Sideburns */}
-                    <path d="M 60 88 C 58 98 62 106 66 108 C 66 98 64 92 60 88 Z" fill="#4E342E" />
-                    <path d="M 140 88 C 142 98 138 106 134 108 C 134 98 136 92 140 88 Z" fill="#4E342E" />
+                    {/* Clean Neutral Eyes */}
+                    <circle cx="82" cy="94" r="5" fill="#212121" />
+                    <circle cx="84" cy="92" r="1.5" fill="#FFFFFF" />
 
-                    {/* Eyes - Big Expressive Graduate Eyes */}
-                    <ellipse cx="82" cy="94" rx="6" ry="6.5" fill="#3E2723" />
-                    <circle cx="84" cy="92" r="2.2" fill="#FFFFFF" />
-                    <circle cx="80" cy="96" r="1" fill="#FFFFFF" />
+                    <circle cx="118" cy="94" r="5" fill="#212121" />
+                    <circle cx="116" cy="92" r="1.5" fill="#FFFFFF" />
 
-                    <ellipse cx="118" cy="94" rx="6" ry="6.5" fill="#3E2723" />
-                    <circle cx="116" cy="92" r="2.2" fill="#FFFFFF" />
-                    <circle cx="120" cy="96" r="1" fill="#FFFFFF" />
+                    {/* Balanced Neutral Eyebrows */}
+                    <path d="M 75 83 Q 82 80 89 83" stroke="#37474F" strokeWidth="2.4" strokeLinecap="round" fill="none" />
+                    <path d="M 111 83 Q 118 80 125 83" stroke="#37474F" strokeWidth="2.4" strokeLinecap="round" fill="none" />
 
-                    {/* Eyebrows */}
-                    <path d="M 74 84 Q 82 80 90 83" stroke="#4E342E" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-                    <path d="M 110 83 Q 118 80 126 84" stroke="#4E342E" strokeWidth="2.5" strokeLinecap="round" fill="none" />
-
-                    {/* Nose */}
-                    <path d="M 99 98 Q 102 101 98 103" stroke="#FFA000" strokeWidth="2" strokeLinecap="round" fill="none" />
-
-                    {/* Gentle Smile / Graduate Expression */}
+                    {/* Gentle Smile / Neutral Speaking Mouth */}
                     {isListening && normalizedVolume > 15 ? (
                         <g>
-                            <ellipse cx="100" cy="112" rx="7" ry="5" fill="#C2185B" />
-                            <path d="M 95 110 Q 100 113 105 110" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+                            <ellipse cx="100" cy="112" rx="7.5" ry="5.5" fill="#B71C1C" />
+                            <path d="M 94 110 Q 100 113 106 110" stroke="#FFFFFF" strokeWidth="1.6" strokeLinecap="round" fill="none" />
                         </g>
                     ) : (
                         <path d="M 91 110 Q 100 118 109 110" stroke="#8D6E63" strokeWidth="2.5" strokeLinecap="round" fill="none" />
@@ -299,7 +349,7 @@ export function IntervieweeAvatar({ isListening = false, volumeLevel = 0, size =
                     <g filter="url(#ieShadow)">
                         {/* Cap Skull Base */}
                         <path
-                            d="M 72 64 C 74 54 126 54 128 64 C 124 72 76 72 72 64 Z"
+                            d="M 64 72 C 66 50 134 50 136 72 C 126 76 74 76 64 72 Z"
                             fill="#1A2024"
                         />
                         {/* Flat Top Diamond Diamond */}

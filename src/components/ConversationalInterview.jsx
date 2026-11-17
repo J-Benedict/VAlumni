@@ -4,19 +4,19 @@ import { ProgramHeadAvatar, IntervieweeAvatar } from './InterviewAvatars';
 import { AudioCleanerPipeline } from '../services/audioCleaner';
 import { ttsService, tokenizeTextForSync } from '../services/ttsService';
 import { refineTranscript } from '../utils/transcriptRefiner';
-import { 
-    INTERVIEW_DOMAINS, 
-    generateProgramHeadReply, 
+import {
+    INTERVIEW_DOMAINS,
+    generateProgramHeadReply,
     extractAndSaveInterviewSession
 } from '../services/conversationalAiService';
-import { 
-    Volume2, 
-    VolumeX, 
-    Sparkles, 
-    CheckCircle2, 
-    AlertCircle, 
-    Activity, 
-    Database, 
+import {
+    Volume2,
+    VolumeX,
+    Sparkles,
+    CheckCircle2,
+    AlertCircle,
+    Activity,
+    Database,
     ArrowRight,
     GraduationCap
 } from 'lucide-react';
@@ -25,18 +25,26 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     // Conversational Chat Messages: [{ id, sender: 'program_head' | 'interviewee', text, timestamp }]
     const [messages, setMessages] = useState([]);
     const [currentStage, setCurrentStage] = useState(1);
-    
-    // Turn State: 'ai_speaking' | 'user_listening' | 'user_processing' | 'ai_thinking' | 'completed'
-    const [turnState, setTurnState] = useState('ai_thinking');
+
+    // Turn State: 'voice_selection' | 'ai_speaking' | 'user_listening' | 'user_processing' | 'ai_thinking' | 'completed'
+    const [turnState, setTurnState] = useState('voice_selection');
+    const [hasStartedMainQA, setHasStartedMainQA] = useState(false);
+    const [isPlayingVoiceSample, setIsPlayingVoiceSample] = useState(false);
     // Real-time word-by-word sync state: { msgId, tokens, visibleWordCount, totalWords } | null
     const [streamingSpeech, setStreamingSpeech] = useState(null);
     const [liveTranscript, setLiveTranscript] = useState('');
     const [micNotice, setMicNotice] = useState('');
     const [micVolume, setMicVolume] = useState(0);
+    const [ambientThreshold, setAmbientThreshold] = useState(() => {
+        const saved = Number(localStorage.getItem('valumni_ambient_threshold'));
+        return Number.isFinite(saved) && saved >= 10 && saved <= 65 ? saved : 24;
+    });
     const [ttsEnabled, setTtsEnabled] = useState(true);
     const [ttsEngine, setTtsEngine] = useState('neural');
     const [selectedVoice, setSelectedVoice] = useState(() => {
-        return localStorage.getItem('valumni_selected_tts_voice') || 'fil-PH-AngeloNeural';
+        const saved = localStorage.getItem('valumni_selected_tts_voice');
+        if (saved === 'fil-PH-BlessicaNeural' || saved === 'en-PH-RosaNeural') return 'fil-PH-BlessicaNeural';
+        return 'fil-PH-AngeloNeural';
     });
     const [showExitModal, setShowExitModal] = useState(false);
     const [completionRecord, setCompletionRecord] = useState(null);
@@ -49,10 +57,13 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     const webSpeechRecRef = useRef(null);
     const accumulatedSpeechRef = useRef('');
     const turnStateRef = useRef(turnState);
+    const hasStartedMainQARef = useRef(hasStartedMainQA);
     const messagesRef = useRef(messages);
     const currentStageRef = useRef(currentStage);
     const sttStatusRef = useRef(sttStatus);
     const liveTranscriptRef = useRef('');
+    const micVolumeRef = useRef(0);
+    const ambientThresholdRef = useRef(ambientThreshold);
     const ttsEnabledRef = useRef(ttsEnabled);
     const selectedVoiceRef = useRef(selectedVoice);
     const speechEndTimeoutRef = useRef(null);
@@ -69,10 +80,12 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     // Sync state -> refs
     useEffect(() => { selectedVoiceRef.current = selectedVoice; }, [selectedVoice]);
     useEffect(() => { turnStateRef.current = turnState; }, [turnState]);
+    useEffect(() => { hasStartedMainQARef.current = hasStartedMainQA; }, [hasStartedMainQA]);
     useEffect(() => { messagesRef.current = messages; }, [messages]);
     useEffect(() => { currentStageRef.current = currentStage; }, [currentStage]);
     useEffect(() => { sttStatusRef.current = sttStatus; }, [sttStatus]);
     useEffect(() => { liveTranscriptRef.current = liveTranscript; }, [liveTranscript]);
+    useEffect(() => { ambientThresholdRef.current = ambientThreshold; }, [ambientThreshold]);
     useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
 
     // Subscribe to TTS engine status updates
@@ -367,7 +380,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                     try {
                         webSpeechRecRef.current.onend = null;
                         webSpeechRecRef.current.stop();
-                    } catch (e) {}
+                    } catch (e) { }
                 }
 
                 const rec = new SpeechRec();
@@ -402,7 +415,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         if (!hasDspVad) {
                             if (speechEndTimeoutRef.current) clearTimeout(speechEndTimeoutRef.current);
                             speechEndTimeoutRef.current = setTimeout(() => {
-                                handleUserTurnCompleteRef.current?.();
+                                handleUserTurnCompleteRef.current?.('auto');
                             }, 1850);
                         }
                     }
@@ -414,7 +427,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         accumulatedSpeechRef.current = liveTranscriptRef.current;
                     }
                     if (turnStateRef.current === 'user_listening' && !isSubmittingTurnRef.current) {
-                        try { rec.start(); } catch (e) {}
+                        try { rec.start(); } catch (e) { }
                     }
                 };
 
@@ -435,7 +448,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     // -------------------------------------------------------------------------
     // HANDS-FREE VOICE LOOP: Step B - User Finished Speaking
     // -------------------------------------------------------------------------
-    const handleUserTurnComplete = async () => {
+    const handleUserTurnComplete = async (triggerSource = 'auto') => {
         if (isSubmittingTurnRef.current) return;
         if (turnStateRef.current !== 'user_listening') return;
 
@@ -454,7 +467,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
             try {
                 webSpeechRecRef.current.onend = null;
                 webSpeechRecRef.current.stop();
-            } catch (e) {}
+            } catch (e) { }
             webSpeechRecRef.current = null;
         }
 
@@ -491,16 +504,20 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
             });
         }
 
-        // 5. NEVER insert a predetermined answer! If no speech was captured, prompt user & keep listening on the same stage.
+        // 5. NEVER insert a predetermined answer! If no speech was captured, prompt user & keep listening on the same stage (unless user pressed Space to skip).
         if (!finalTranscriptText) {
-            setMicNotice(
-                hadGenuineMicSpeech
-                    ? 'Hindi po narinig nang malinaw ang iyong sinabi. Pakisubukan pong magsalita muli nang malapit sa mikropono.'
-                    : 'Wala pong na-detect na boses mula sa iyong mikropono. Pakisubukan pong magsalita muli.'
-            );
-            isSubmittingTurnRef.current = false;
-            await startIntervieweeListening();
-            return;
+            if (triggerSource === 'space') {
+                finalTranscriptText = '(Skipped question)';
+            } else {
+                setMicNotice(
+                    hadGenuineMicSpeech
+                        ? 'Hindi po narinig nang malinaw ang iyong sinabi. Pakisubukan pong magsalita muli nang malapit sa mikropono.'
+                        : 'Wala pong na-detect na boses mula sa iyong mikropono. Pakisubukan pong magsalita muli.'
+                );
+                isSubmittingTurnRef.current = false;
+                await startIntervieweeListening();
+                return;
+            }
         }
 
         setMicNotice('');
@@ -579,39 +596,42 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     });
 
     // -------------------------------------------------------------------------
-    // INITIALIZATION: Start Hands-Free Session Immediately
+    // INITIALIZATION: Prepare Microphone DSP & Voice Previews (Wait for Voice Selection before Q1)
     // -------------------------------------------------------------------------
     useEffect(() => {
         isUnmountedRef.current = false;
 
-        const startSession = async () => {
+        const initInterviewStage = async () => {
             const initialQuestion = INTERVIEW_DOMAINS[0].starterMessage;
 
-            // Ensure Stage 1 audio is warming in parallel while microphone initializes
+            // Pre-synthesize sample greeting ("Magandang araw") for both Angelo & Rose plus Q1 audio
             if (ttsEnabledRef.current) {
+                ttsService.prefetch('Magandang araw', 'fil-PH-AngeloNeural');
+                ttsService.prefetch('Magandang araw', 'fil-PH-BlessicaNeural');
                 ttsService.prefetch(initialQuestion, selectedVoiceRef.current);
             }
 
-            // 1. Initialize Web Audio DSP Noise Reduction Pipeline
+            // Initialize Web Audio DSP Noise Reduction Pipeline with Ambient Noise Threshold
             try {
                 audioCleanerRef.current = new AudioCleanerPipeline({
                     silenceTimeoutMs: 1550,
                     longTurnSilenceTimeoutMs: 1950,
-                    speechThreshold: 15,
-                    minSpeechDurationMs: 650,
+                    speechThreshold: ambientThresholdRef.current,
+                    minSpeechDurationMs: 550,
                     chunkMinDurationSec: 7.5,
                     chunkSilenceSplitMs: 520,
                     onSpeechStart: () => {
                         setMicNotice('');
                     },
                     onSpeechVolume: (vol) => {
+                        micVolumeRef.current = vol;
                         setMicVolume(vol);
                     },
                     onSpeechChunk: (wavBlob, chunkIdx) => {
                         enqueueSpeechChunkRef.current?.(wavBlob, chunkIdx);
                     },
                     onSilenceDetected: () => {
-                        handleUserTurnCompleteRef.current?.();
+                        handleUserTurnCompleteRef.current?.('auto');
                     }
                 });
 
@@ -619,30 +639,9 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
             } catch (err) {
                 console.warn('Microphone DSP initialization note:', err);
             }
-
-            if (isUnmountedRef.current) return;
-
-            // Pre-synthesize deterministic middle stages (4, 5, 6, 7) in background after Stage 1 starts
-            if (ttsEnabledRef.current) {
-                setTimeout(() => {
-                    prefetchStagesInBackground([4, 5, 6, 7], selectedVoiceRef.current, []);
-                }, 1200);
-            }
-
-            // 2. Program Head delivers welcoming question: bubble + words appear at exact audio start
-            const initialMsg = {
-                id: 'msg_0',
-                sender: 'program_head',
-                text: initialQuestion,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            };
-
-            await deliverProgramHeadTurn(initialMsg, [], () => {
-                startIntervieweeListening();
-            });
         };
 
-        startSession();
+        initInterviewStage();
 
         return () => {
             isUnmountedRef.current = true;
@@ -660,83 +659,95 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                 try {
                     webSpeechRecRef.current.onend = null;
                     webSpeechRecRef.current.stop();
-                } catch (e) {}
+                } catch (e) { }
             }
         };
     }, []);
 
-    // Keyboard shortcut (Space) to finish speaking turn
+    // Backup silence watchdog: guarantees turn completion if mic volume stays below ambient threshold for 1.75s after speech
+    useEffect(() => {
+        if (turnState !== 'user_listening' || !liveTranscript.trim()) return undefined;
+        const backupTimer = setTimeout(() => {
+            if (
+                turnStateRef.current === 'user_listening' &&
+                !isSubmittingTurnRef.current &&
+                micVolumeRef.current < ambientThresholdRef.current
+            ) {
+                handleUserTurnCompleteRef.current?.('auto');
+            }
+        }, 1750);
+        return () => clearTimeout(backupTimer);
+    }, [liveTranscript, turnState]);
+
+    // Select & preview voice with a short "Magandang araw" sample (not saved in transcript)
+    const handlePreviewAndSelectVoice = async (voiceId) => {
+        setSelectedVoice(voiceId);
+        selectedVoiceRef.current = voiceId;
+        localStorage.setItem('valumni_selected_tts_voice', voiceId);
+
+        const initialQuestion = INTERVIEW_DOMAINS[0]?.starterMessage;
+        if (initialQuestion) {
+            ttsService.prefetch(initialQuestion, voiceId);
+        }
+
+        if (ttsEnabledRef.current) {
+            setIsPlayingVoiceSample(true);
+            await ttsService.speak('Magandang araw', {
+                voice: voiceId,
+                onStart: () => {
+                    if (!isUnmountedRef.current) setIsPlayingVoiceSample(true);
+                },
+                onEnd: () => {
+                    if (!isUnmountedRef.current) setIsPlayingVoiceSample(false);
+                }
+            });
+        }
+    };
+
+    // Start the main Q&A session from Stage 1 after welcoming remarks & voice selection
+    const handleBeginMainQASession = async () => {
+        if (hasStartedMainQARef.current) return;
+        ttsService.stop();
+        setIsPlayingVoiceSample(false);
+        setHasStartedMainQA(true);
+        hasStartedMainQARef.current = true;
+
+        if (ttsEnabledRef.current) {
+            setTimeout(() => {
+                prefetchStagesInBackground([4, 5, 6, 7], selectedVoiceRef.current, []);
+            }, 1200);
+        }
+
+        const initialQuestion = INTERVIEW_DOMAINS[0].starterMessage;
+        const initialMsg = {
+            id: 'msg_0',
+            sender: 'program_head',
+            text: initialQuestion,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+
+        await deliverProgramHeadTurn(initialMsg, [], () => {
+            startIntervieweeListening();
+        });
+    };
+
+    // Keyboard shortcut (Space) to skip audio or skip/continue to next question
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (['input', 'textarea', 'select', 'button'].includes(document.activeElement?.tagName?.toLowerCase())) return;
-            if (e.code === 'Space' && turnStateRef.current === 'user_listening') {
-                e.preventDefault();
-                handleUserTurnCompleteRef.current?.();
+            if (e.code === 'Space') {
+                if (turnStateRef.current === 'ai_speaking') {
+                    e.preventDefault();
+                    skipCurrentSpeechAndListen();
+                } else if (turnStateRef.current === 'user_listening') {
+                    e.preventDefault();
+                    handleUserTurnCompleteRef.current?.('space');
+                }
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
-
-    // Handle switching voice mid-session (immediately re-speaks + re-streams words in sync!)
-    const handleVoiceChange = async (newVoice) => {
-        setSelectedVoice(newVoice);
-        selectedVoiceRef.current = newVoice;
-        localStorage.setItem('valumni_selected_tts_voice', newVoice);
-
-        // Warm upcoming stages for the newly selected voice
-        setTimeout(() => {
-            prefetchStagesInBackground([4, 5, 6, 7], newVoice, messagesRef.current);
-        }, 1000);
-
-        if (ttsEnabledRef.current && (turnStateRef.current === 'ai_speaking' || pendingTurnCommitRef.current)) {
-            const pending = pendingTurnCommitRef.current;
-            const lastAiMsg = pending
-                ? pending.fullConversation[pending.fullConversation.length - 1]
-                : [...messagesRef.current].reverse().find(m => m.sender === 'program_head');
-
-            if (lastAiMsg) {
-                setTurnState('ai_thinking');
-                turnStateRef.current = 'ai_thinking';
-                setStreamingSpeech(null);
-
-                await ttsService.speak(lastAiMsg.text, {
-                    voice: newVoice,
-                    onStart: ({ tokens, totalWords }) => {
-                        if (pending) {
-                            setMessages(pending.fullConversation);
-                            messagesRef.current = pending.fullConversation;
-                        }
-                        setStreamingSpeech({
-                            msgId: lastAiMsg.id,
-                            tokens,
-                            visibleWordCount: 1,
-                            totalWords
-                        });
-                        setTurnState('ai_speaking');
-                        turnStateRef.current = 'ai_speaking';
-                    },
-                    onProgress: ({ visibleWordCount, totalWords, tokens }) => {
-                        setStreamingSpeech({
-                            msgId: lastAiMsg.id,
-                            tokens,
-                            visibleWordCount,
-                            totalWords
-                        });
-                    },
-                    onEnd: () => {
-                        pendingTurnCommitRef.current = null;
-                        setStreamingSpeech(null);
-                        if (pending?.onComplete) {
-                            pending.onComplete(pending.fullConversation);
-                        } else if (currentStageRef.current < INTERVIEW_DOMAINS.length) {
-                            startIntervieweeListening();
-                        }
-                    }
-                });
-            }
-        }
-    };
 
     // Replay any Program Head question on demand with synchronized word-by-word flow
     const handleReplayMessage = async (msg) => {
@@ -752,7 +763,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                 try {
                     webSpeechRecRef.current.onend = null;
                     webSpeechRecRef.current.stop();
-                } catch (e) {}
+                } catch (e) { }
             }
             if (audioCleanerRef.current) {
                 await audioCleanerRef.current.stopListening();
@@ -794,6 +805,8 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
     const isAiSpeaking = turnState === 'ai_speaking';
     const isUserListening = turnState === 'user_listening';
     const isAiThinking = turnState === 'ai_thinking';
+    const isVoiceSelection = turnState === 'voice_selection';
+    const programHeadGender = selectedVoice === 'fil-PH-BlessicaNeural' ? 'female' : 'male';
 
     return (
         <div className="h-screen max-h-screen w-screen overflow-hidden flex flex-col bg-[#1e1e1e] text-slate-100 select-none relative font-sans">
@@ -816,24 +829,8 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                     </div>
                 </div>
 
-                {/* Right: Voice Selector, Mute, and Exit */}
+                {/* Right: Mute and Exit */}
                 <div className="flex items-center space-x-2 sm:space-x-2.5">
-                    {/* Neural Voice Model Selector */}
-                    <div className="flex items-center space-x-1.5 bg-white/5 border border-white/10 px-2.5 py-1 rounded-xl text-xs font-mono">
-                        <span className="text-slate-400 hidden sm:inline">Voice:</span>
-                        <select
-                            value={selectedVoice}
-                            onChange={(e) => handleVoiceChange(e.target.value)}
-                            className="bg-transparent text-blue-300 font-semibold focus:outline-none cursor-pointer text-xs"
-                            title={ttsEngine === 'neural' ? 'Microsoft Edge Neural Voice Active' : 'TTS Voice Selection'}
-                        >
-                            <option value="fil-PH-AngeloNeural" className="bg-[#242424] text-white">Angelo (Filipino/Taglish Male)</option>
-                            <option value="fil-PH-BlessicaNeural" className="bg-[#242424] text-white">Blessica (Filipino/Taglish Female)</option>
-                            <option value="en-PH-JamesNeural" className="bg-[#242424] text-white">James (PH English Male • Auto-Fil)</option>
-                            <option value="en-PH-RosaNeural" className="bg-[#242424] text-white">Rosa (PH English Female • Auto-Fil)</option>
-                        </select>
-                    </div>
-
                     {/* TTS Mute Toggle */}
                     <button
                         onClick={() => {
@@ -844,11 +841,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                                 skipCurrentSpeechAndListen();
                             }
                         }}
-                        className={`p-2 rounded-xl border transition-all cursor-pointer ${
-                            ttsEnabled 
-                                ? 'bg-white/10 hover:bg-white/15 text-white border-white/15' 
+                        className={`p-2 rounded-xl border transition-all cursor-pointer ${ttsEnabled
+                                ? 'bg-white/10 hover:bg-white/15 text-white border-white/15'
                                 : 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                        }`}
+                            }`}
                         title={ttsEnabled ? "Mute Voice Audio" : "Unmute Voice Audio"}
                         aria-label="Toggle Voice Audio"
                     >
@@ -868,6 +864,16 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
             {/* Hands-Free Real-time Status Banner */}
             <div className="relative z-10 w-full bg-[#121212] border-b border-white/5 px-4 py-1.5 flex items-center justify-center shrink-0">
+                {isVoiceSelection && (
+                    <div className="flex items-center space-x-2 text-xs font-mono text-amber-300">
+                        <Volume2 className="w-4 h-4 text-amber-400" />
+                        <span>
+                            {isPlayingVoiceSample
+                                ? `Playing sample voice ("Magandang araw") for ${selectedVoice === 'fil-PH-BlessicaNeural' ? 'Rose' : 'Angelo'}...`
+                                : 'Welcome! Choose your preferred interviewer voice below before starting the Q&A session.'}
+                        </span>
+                    </div>
+                )}
                 {isAiSpeaking && (
                     <div className="flex items-center space-x-3 text-xs font-mono text-blue-400">
                         <div className="flex items-center space-x-2 animate-pulse">
@@ -885,29 +891,23 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                     </div>
                 )}
                 {isUserListening && (
-                    <div className="flex items-center space-x-3 text-xs font-mono text-emerald-400 flex-wrap justify-center gap-y-1">
-                        <div className="flex items-center space-x-2">
-                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-                            <span className="font-bold">Microphone active — Speak in Filipino, English, or Taglish...</span>
-                            <div className="w-20 h-2 bg-slate-800 rounded-full overflow-hidden border border-emerald-500/30 ml-1" title={`Mic Input Level: ${micVolume}%`}>
-                                <div 
-                                    className="h-full bg-emerald-400 transition-all duration-75"
-                                    style={{ width: `${micVolume}%` }}
-                                />
-                            </div>
-                        </div>
-
-                        {/* Instant Advance / Done Speaking Action Button */}
-                        <button
-                            onClick={() => handleUserTurnComplete()}
-                            className="px-3 py-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-bold text-xs flex items-center space-x-1.5 shadow-lg shadow-emerald-500/25 transition-all cursor-pointer border border-emerald-300"
-                            title="Click or press Spacebar when you finish speaking"
+                    <div className="flex items-center space-x-2 text-xs font-mono text-emerald-400 justify-center">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                        <span className="font-bold">Microphone active — Speak in Filipino, English, or Taglish...</span>
+                        <div
+                            className="relative w-24 h-2.5 bg-slate-800 rounded-full overflow-hidden border border-emerald-500/30 ml-1"
+                            title={`Mic Input Level: ${micVolume}% (Ambient Threshold: ${ambientThreshold}%)`}
                         >
-                            <CheckCircle2 className="w-3.5 h-3.5" />
-                            <span>Done Speaking</span>
-                            <span className="text-[10px] bg-black/20 px-1 py-0.5 rounded font-mono hidden sm:inline">Space</span>
-                            <ArrowRight className="w-3 h-3 ml-0.5" />
-                        </button>
+                            <div
+                                className={`h-full transition-all duration-75 ${micVolume >= ambientThreshold ? 'bg-emerald-400' : 'bg-slate-500'}`}
+                                style={{ width: `${micVolume}%` }}
+                            />
+                            <div
+                                className="absolute top-0 bottom-0 w-0.5 bg-amber-400 z-10"
+                                style={{ left: `${Math.min(100, ambientThreshold)}%` }}
+                                title={`Ambient Noise Threshold: ${ambientThreshold}%`}
+                            />
+                        </div>
                     </div>
                 )}
                 {turnState === 'user_processing' && (
@@ -932,13 +932,14 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
 
             {/* MAIN STAGE: Program Head on Left, Chat in Middle, Interviewee on Right */}
             <main className="flex-1 min-h-0 flex items-stretch justify-between px-3 sm:px-6 md:px-8 py-4 sm:py-6 relative overflow-hidden">
-                
+
                 {/* 1. LEFT SIDE: Program Head Avatar Column */}
                 <div className="hidden sm:flex w-44 md:w-60 lg:w-72 shrink-0 flex-col justify-end items-center pb-6 md:pb-10 pl-2">
-                    <ProgramHeadAvatar 
-                        isSpeaking={isAiSpeaking} 
+                    <ProgramHeadAvatar
+                        isSpeaking={isAiSpeaking || isPlayingVoiceSample}
                         isThinking={isAiThinking}
-                        size={170} 
+                        gender={programHeadGender}
+                        size={170}
                     />
                 </div>
 
@@ -949,6 +950,88 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         ref={chatStreamRef}
                         className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-5 custom-scrollbar select-text"
                     >
+                        {/* Pre-Q&A Welcoming Remarks & Voice Selection (Not Voiced as Q1, Not Saved in Transcript) */}
+                        <div className="flex w-full justify-start">
+                            <div className="relative max-w-[92%] sm:max-w-[85%] px-5 py-4 rounded-3xl rounded-tl-sm bg-[#3e3e3e] text-white border border-white/10 shadow-lg space-y-3.5">
+                                <div className="flex items-center justify-between space-x-3 text-[11px] font-mono opacity-85">
+                                    <span className="font-bold text-blue-300">Program Head (CCS) • Welcome</span>
+                                </div>
+
+                                <p className="text-sm sm:text-base text-slate-100 leading-relaxed font-medium">
+                                    Welcome to the LSPU College of Computer Studies Alumni Exit Interview! Thank you for taking the time to share your college journey and feedback with us. Before our main Q&amp;A session begins, please choose which interviewer voice you would like to use:
+                                </p>
+
+                                {/* Voice Selection Cards: Angelo (Male) & Rose (Female) */}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                                    <button
+                                        type="button"
+                                        disabled={hasStartedMainQA}
+                                        onClick={() => handlePreviewAndSelectVoice('fil-PH-AngeloNeural')}
+                                        className={`p-3 rounded-2xl border text-left transition-all flex items-center justify-between gap-2 ${selectedVoice === 'fil-PH-AngeloNeural'
+                                                ? 'bg-blue-500/20 border-blue-400 text-white ring-1 ring-blue-400/50'
+                                                : 'bg-[#2f2f2f] border-white/10 text-slate-300 hover:bg-[#363636]'
+                                            } ${hasStartedMainQA ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+                                    >
+                                        <div>
+                                            <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                                                <span>Angelo</span>
+                                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/30 text-blue-200">
+                                                    Male
+                                                </span>
+                                            </div>
+                                            <div className="text-[11px] text-slate-300 mt-0.5">
+                                                Male TTS Voice • Click to hear sample
+                                            </div>
+                                        </div>
+                                        <Volume2 className={`w-4 h-4 shrink-0 ${selectedVoice === 'fil-PH-AngeloNeural' ? 'text-blue-300' : 'text-slate-400'}`} />
+                                    </button>
+
+                                    <button
+                                        type="button"
+                                        disabled={hasStartedMainQA}
+                                        onClick={() => handlePreviewAndSelectVoice('fil-PH-BlessicaNeural')}
+                                        className={`p-3 rounded-2xl border text-left transition-all flex items-center justify-between gap-2 ${selectedVoice === 'fil-PH-BlessicaNeural'
+                                                ? 'bg-rose-500/20 border-rose-400 text-white ring-1 ring-rose-400/50'
+                                                : 'bg-[#2f2f2f] border-white/10 text-slate-300 hover:bg-[#363636]'
+                                            } ${hasStartedMainQA ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+                                    >
+                                        <div>
+                                            <div className="text-sm font-bold text-white flex items-center gap-1.5">
+                                                <span>Rose</span>
+                                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-500/30 text-rose-200">
+                                                    Female
+                                                </span>
+                                            </div>
+                                            <div className="text-[11px] text-slate-300 mt-0.5">
+                                                Female TTS Voice • Click to hear sample
+                                            </div>
+                                        </div>
+                                        <Volume2 className={`w-4 h-4 shrink-0 ${selectedVoice === 'fil-PH-BlessicaNeural' ? 'text-rose-300' : 'text-slate-400'}`} />
+                                    </button>
+                                </div>
+
+                                {!hasStartedMainQA ? (
+                                    <div className="pt-1 flex justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={handleBeginMainQASession}
+                                            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-emerald-600 hover:from-blue-500 hover:to-emerald-500 text-white font-bold text-xs sm:text-sm flex items-center space-x-2 shadow-lg transition-all cursor-pointer active:scale-95"
+                                        >
+                                            <span>Start Main Q&amp;A Session</span>
+                                            <ArrowRight className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="pt-1 flex items-center space-x-1.5 text-[11px] font-mono text-emerald-300">
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                        <span>
+                                            Selected Voice: {selectedVoice === 'fil-PH-BlessicaNeural' ? 'Rose (Female TTS Voice)' : 'Angelo (Male TTS Voice)'}
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
                         {messages.map((msg) => {
                             const isProgramHead = msg.sender === 'program_head';
                             const isStreamingThis =
@@ -963,11 +1046,10 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                                     className={`flex w-full ${isProgramHead ? 'justify-start' : 'justify-end'}`}
                                 >
                                     <div
-                                        className={`relative max-w-[88%] sm:max-w-[80%] px-5 py-4 rounded-3xl text-sm sm:text-base leading-relaxed tracking-normal font-sans shadow-lg transition-all ${
-                                            isProgramHead
+                                        className={`relative max-w-[88%] sm:max-w-[80%] px-5 py-4 rounded-3xl text-sm sm:text-base leading-relaxed tracking-normal font-sans shadow-lg transition-all ${isProgramHead
                                                 ? 'bg-[#3e3e3e] text-white rounded-tl-sm border border-white/10'
                                                 : 'bg-[#244335] text-white rounded-tr-sm border border-emerald-500/30'
-                                        }`}
+                                            }`}
                                     >
                                         {/* Speaker Header */}
                                         <div className="flex items-center justify-between space-x-3 mb-1.5 opacity-80 text-[11px] font-mono">
@@ -1038,7 +1120,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                                         </div>
                                         <button
                                             type="button"
-                                            onClick={() => handleUserTurnComplete()}
+                                            onClick={() => handleUserTurnComplete('button')}
                                             className="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-bold text-xs flex items-center space-x-1 cursor-pointer transition-all shadow"
                                             title="Click when finished speaking"
                                         >
@@ -1081,32 +1163,31 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                         <div ref={chatEndRef} />
                     </div>
 
-                    {/* Bottom Hands-Free Voice Status Bar (Voice Input Only) */}
-                    <div className="bg-[#242424] border-t border-white/10 px-4 py-3 flex items-center justify-between text-[11px] font-mono text-slate-400">
-                        <div className="flex items-center space-x-2">
-                            <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold">
-                                100% HANDS-FREE VOICE
-                            </span>
-                            <span className="hidden sm:inline">Adaptive silence detection (~1.6s) • Long answers supported • Spacebar to finish speaking</span>
-                        </div>
-                        {isUserListening && (
-                            <button
-                                type="button"
-                                onClick={() => handleUserTurnComplete()}
-                                className="px-3 py-1 rounded-lg bg-white/10 hover:bg-emerald-500 hover:text-slate-950 text-emerald-300 font-semibold text-xs border border-white/15 transition-all cursor-pointer"
-                            >
-                                Done Speaking →
-                            </button>
-                        )}
+                    {/* Bottom Hands-Free Voice Status Bar */}
+                    <div className="bg-[#242424] border-t border-white/10 px-4 py-3 flex items-center justify-start gap-3 text-xs font-mono text-slate-300">
+                        <button
+                            type="button"
+                            disabled={!isUserListening}
+                            onClick={() => handleUserTurnComplete('button')}
+                            className={`px-3.5 py-1.5 rounded-lg font-semibold text-xs border transition-all shrink-0 ${isUserListening
+                                    ? 'bg-white/10 hover:bg-emerald-500 hover:text-slate-950 text-emerald-300 border-white/15 cursor-pointer'
+                                    : 'bg-white/5 text-slate-500 border-white/10 cursor-not-allowed'
+                                }`}
+                        >
+                            Done Speaking →
+                        </button>
+                        <span className="text-slate-200 text-xs font-sans sm:font-mono leading-snug">
+                            Adaptive Silence Detection, Press Space bar to skip and continue to next question
+                        </span>
                     </div>
                 </div>
 
                 {/* 3. RIGHT SIDE: Interviewee Avatar Column */}
                 <div className="hidden sm:flex w-44 md:w-60 lg:w-72 shrink-0 flex-col justify-end items-center pb-6 md:pb-10 pr-2">
-                    <IntervieweeAvatar 
-                        isListening={isUserListening} 
+                    <IntervieweeAvatar
+                        isListening={isUserListening}
                         volumeLevel={micVolume}
-                        size={170} 
+                        size={170}
                     />
                 </div>
             </main>
@@ -1191,7 +1272,7 @@ export default function ConversationalInterview({ onInterviewComplete, onExitToL
                                         try {
                                             webSpeechRecRef.current.onend = null;
                                             webSpeechRecRef.current.stop();
-                                        } catch (e) {}
+                                        } catch (e) { }
                                     }
                                     if (onExitToLanding) onExitToLanding();
                                 }}

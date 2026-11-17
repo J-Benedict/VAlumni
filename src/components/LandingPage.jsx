@@ -7,12 +7,18 @@ import { INTERVIEW_DOMAINS } from '../services/conversationalAiService';
 import { ShieldCheck, CheckCircle, ArrowRight, FileText } from 'lucide-react';
 
 export default function LandingPage({ onStartSession, onOpenAdminLogin }) {
-    const [agreedToTos, setAgreedToTos] = useState(true);
+    const [agreedToTos, setAgreedToTos] = useState(false);
 
-    // Pre-synthesize the Program Head's opening greeting so voice + text start instantly on session launch
+    // Reset TOS checkbox on mount (including after completed sessions) and pre-synthesize voices
     useEffect(() => {
-        const preferredVoice = localStorage.getItem('valumni_selected_tts_voice') || 'fil-PH-AngeloNeural';
+        setAgreedToTos(false);
+        const rawVoice = localStorage.getItem('valumni_selected_tts_voice');
+        const preferredVoice = (rawVoice === 'fil-PH-BlessicaNeural' || rawVoice === 'en-PH-RosaNeural')
+            ? 'fil-PH-BlessicaNeural'
+            : 'fil-PH-AngeloNeural';
         ttsService.prefetch(INTERVIEW_DOMAINS[0]?.starterMessage, preferredVoice);
+        ttsService.prefetch('Magandang araw', 'fil-PH-AngeloNeural');
+        ttsService.prefetch('Magandang araw', 'fil-PH-BlessicaNeural');
     }, []);
 
     return (
@@ -128,7 +134,7 @@ export default function LandingPage({ onStartSession, onOpenAdminLogin }) {
                     </button>
                     {!agreedToTos && (
                         <p className="text-[11px] sm:text-xs md:text-sm font-sans text-rose-700 bg-rose-50 px-3.5 py-1 rounded-full border border-rose-200">
-                            Please check the agreement box above to begin.
+                            Please read and understand the agreement before you begin.
                         </p>
                     )}
                 </div>

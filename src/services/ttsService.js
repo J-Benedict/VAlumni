@@ -4,8 +4,8 @@ import { preprocessTextForTts } from '../utils/textToSpeechPreProcessor';
  * VAlumni Natural Text-to-Speech (TTS) Service with Real-Time Word-Level Synchronization
  *
  * Primary engine: Microsoft Edge Neural voices (via backend /api/tts/generate)
- *   - fil-PH-AngeloNeural / fil-PH-BlessicaNeural : native Filipino speakers (Tagalog + Taglish)
- *   - en-PH-JamesNeural / en-PH-RosaNeural        : Philippine English speakers (English only)
+ *   - fil-PH-AngeloNeural   : Angelo (Male TTS Voice)
+ *   - fil-PH-BlessicaNeural : Rose (Female TTS Voice)
  *
  * Word-level synchronization:
  *   - Pre-calculates prosody & syllable-weighted timing thresholds across tokens (accounting for
@@ -15,13 +15,9 @@ import { preprocessTextForTts } from '../utils/textToSpeechPreProcessor';
  */
 
 export const NEURAL_VOICES = {
-    'fil-PH-AngeloNeural': { lang: 'fil', gender: 'male', label: 'Angelo — Filipino Male (Tagalog/Taglish)' },
-    'fil-PH-BlessicaNeural': { lang: 'fil', gender: 'female', label: 'Blessica — Filipino Female (Tagalog/Taglish)' },
-    'en-PH-JamesNeural': { lang: 'en', gender: 'male', label: 'James — Philippine English Male (English only)' },
-    'en-PH-RosaNeural': { lang: 'en', gender: 'female', label: 'Rosa — Philippine English Female (English only)' }
+    'fil-PH-AngeloNeural': { lang: 'fil', gender: 'male', label: 'Angelo (Male TTS Voice)' },
+    'fil-PH-BlessicaNeural': { lang: 'fil', gender: 'female', label: 'Rose (Female TTS Voice)' }
 };
-
-const FILIPINO_FOR_GENDER = { male: 'fil-PH-AngeloNeural', female: 'fil-PH-BlessicaNeural' };
 
 const TAGALOG_INDICATORS = new Set([
     'ang', 'ng', 'mga', 'sa', 'opo', 'po', 'hindi', 'oo', 'kumusta', 'kamusta', 'natin', 'inyo',
@@ -171,14 +167,14 @@ class TtsService {
     }
 
     resolveVoice(requestedVoice, lang) {
-        const meta = NEURAL_VOICES[requestedVoice];
-        if (!meta) {
-            return lang === 'en' ? 'en-PH-JamesNeural' : 'fil-PH-AngeloNeural';
+        if (
+            requestedVoice === 'fil-PH-BlessicaNeural' ||
+            requestedVoice === 'en-PH-RosaNeural' ||
+            requestedVoice === 'rose'
+        ) {
+            return 'fil-PH-BlessicaNeural';
         }
-        if ((lang === 'fil' || lang === 'taglish') && meta.lang === 'en') {
-            return FILIPINO_FOR_GENDER[meta.gender];
-        }
-        return requestedVoice;
+        return 'fil-PH-AngeloNeural';
     }
 
     reportEngine(status) {
